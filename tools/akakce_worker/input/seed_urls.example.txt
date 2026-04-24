@@ -1,0 +1,7 @@
+# One URL per line.
+# You can use either brochure detail pages or direct CDN image URLs.
+# Direct CDN image URLs are safer on GitHub Actions because they bypass the listing page.
+
+https://www.akakce.com/brosurler/bim-18-mart-2026-aktuel-katalogu-indirim-brosuru-55944
+https://cdn.akakce.com/_bro/u/731/55944/55944_462806.jpg
+https://cdn.akakce.com/_bro/u/731/55944/55944_462807.jpg

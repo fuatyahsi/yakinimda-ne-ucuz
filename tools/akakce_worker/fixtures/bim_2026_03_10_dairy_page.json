@@ -1,0 +1,108 @@
+{
+  "marketName": "BIM",
+  "brochureTitleContains": "10 Mart Salı",
+  "pageIndex": 1,
+  "expectedCount": 25,
+  "products": [
+    {
+      "productName": "Dana Kangal Sucuk Torku 500 g",
+      "price": 299.0
+    },
+    {
+      "productName": "Dana Baton Kavurma Torku 1000 g",
+      "price": 999.0
+    },
+    {
+      "productName": "Tereyağı Torku 500 g",
+      "price": 349.0
+    },
+    {
+      "productName": "Dana Pastırma Torku 100 g",
+      "price": 219.0
+    },
+    {
+      "productName": "Piliç Bonfile Banvit 1000 g",
+      "price": 149.0
+    },
+    {
+      "productName": "%3 Yağlı Yoğurt İçim 3000 g",
+      "price": 169.0
+    },
+    {
+      "productName": "Yarım Yağlı Yoğurt Dost 5000 g",
+      "price": 229.0
+    },
+    {
+      "productName": "%10 Yağlı Yoğurt Dost 1000 g",
+      "price": 99.5
+    },
+    {
+      "productName": "Çilekli Quark Sek 140 g",
+      "price": 44.5
+    },
+    {
+      "productName": "Dana Soslu Köfte Namet 250 g",
+      "price": 99.0
+    },
+    {
+      "productName": "Dana Kokteyl Sosis Maret 200 g",
+      "price": 115.0
+    },
+    {
+      "productName": "Hindi Salam Pınar 50 g",
+      "price": 12.5
+    },
+    {
+      "productName": "Yarım Yağlı Tost Peyniri Aknaz 1500 g",
+      "price": 349.0
+    },
+    {
+      "productName": "Tam Yağlı Taze Kaşar Peyniri Teksüt 1000 g",
+      "price": 359.0
+    },
+    {
+      "productName": "Tam Yağlı Süzme Peynir İçim 900 g",
+      "price": 189.0
+    },
+    {
+      "productName": "Ayran Dost 2 L",
+      "price": 69.5
+    },
+    {
+      "productName": "Ayran İçim 200 ml",
+      "price": 9.75
+    },
+    {
+      "productName": "Naneli Ayran Dost 300 ml",
+      "price": 14.5
+    },
+    {
+      "productName": "Lor Peyniri Aknaz 1000 g",
+      "price": 69.5
+    },
+    {
+      "productName": "Yarım Yağlı Taze Beyaz Peynir Aknaz 2000 g",
+      "price": 349.0
+    },
+    {
+      "productName": "Orman Meyveli Süt İçimino 6x180 ml",
+      "price": 79.5
+    },
+    {
+      "productName": "Çikolatalı Süt İçimino 6x180 ml",
+      "price": 79.5
+    },
+    {
+      "productName": "Sade Kefir Torku 1 L",
+      "price": 75.0
+    },
+    {
+      "productName": "Kara Mürverli ve Yaban Mersinli Probiyotik İçecek İçim 250 ml",
+      "price": 39.5
+    },
+    {
+      "productName": "%20 Yağlı Bitkisel Krema Dost 200 ml",
+      "price": 16.5
+    }
+  ]
+}
