@@ -1,0 +1,65 @@
+{
+  "sourceLabel": "Akakce Daily Brochures",
+  "updatedAt": "2026-03-19T05:00:00Z",
+  "brochureCount": 2,
+  "itemCount": 3,
+  "brochures": [
+    {
+      "id": "55944",
+      "detailUrl": "https://www.akakce.com/brosurler/bim-18-mart-2026-aktuel-katalogu-indirim-brosuru-55944",
+      "title": "Bim 18 Mart 2026 Aktüel Kataloğu",
+      "marketName": "BIM",
+      "validFrom": "2026-03-18",
+      "validUntil": "2026-03-25",
+      "imageUrls": [
+        "https://cdn.akakce.com/_bro/u/3200/55944/55944_000001.jpg"
+      ]
+    }
+  ],
+  "items": [
+    {
+      "id": "55944-01-lav-kilitli-saklama-kabi",
+      "brochureId": "55944",
+      "brochureUrl": "https://www.akakce.com/brosurler/bim-18-mart-2026-aktuel-katalogu-indirim-brosuru-55944",
+      "marketName": "BIM",
+      "pageIndex": 1,
+      "productName": "Lav Kilitli Saklama Kabı",
+      "brand": "LAV",
+      "discountPrice": 79.0,
+      "regularPrice": null,
+      "currency": "TRY",
+      "confidence": 0.96,
+      "imageUrl": "https://cdn.akakce.com/_bro/u/3200/55944/55944_000001.jpg",
+      "sourceLabel": "Akakce Worker Feed",
+      "validFrom": "2026-03-18",
+      "validUntil": "2026-03-25",
+      "ocrText": "LAV KILITLI SAKLAMA KABI 79 TL",
+      "tags": [
+        "storage",
+        "home"
+      ]
+    },
+    {
+      "id": "55944-01-fellas-kakaolu-findik-kremasi",
+      "brochureId": "55944",
+      "brochureUrl": "https://www.akakce.com/brosurler/esenlik-14-mart-2026-aktuel-katalogu-indirim-brosuru-56045",
+      "marketName": "Esenlik",
+      "pageIndex": 1,
+      "productName": "Fellas Kakaolu Fındık Kreması 300 gr",
+      "brand": "Fellas",
+      "discountPrice": 42.5,
+      "regularPrice": 51.0,
+      "currency": "TRY",
+      "confidence": 0.93,
+      "imageUrl": "https://cdn.akakce.com/_bro/u/3200/56045/56045_000001.jpg",
+      "sourceLabel": "Akakce Worker Feed",
+      "validFrom": "2026-03-14",
+      "validUntil": "2026-04-01",
+      "ocrText": "FELLAS KAKAOLU FINDIK KREMASI 300 GR 42,5",
+      "tags": [
+        "grocery",
+        "spread"
+      ]
+    }
+  ]
+}

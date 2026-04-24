@@ -1,0 +1,1 @@
+Menunu planla, dolabini yonet, eksikleri tespit et ve alisveris listeni hazirla.

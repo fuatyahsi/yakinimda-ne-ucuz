@@ -1,0 +1,1 @@
+Akilli Mutfak Asistani yenilendi. Artik once menu planlayabilir, dolap stoklarini adetli takip edebilir ve eksik malzemeleri alisveris listesine daha net yansitabilirsin.

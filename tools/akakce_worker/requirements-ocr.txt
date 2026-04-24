@@ -1,0 +1,5 @@
+msvc-runtime>=14.42.34433,<15; platform_system == "Windows"
+numpy==2.2.6
+onnxruntime==1.22.1
+opencv-python-headless==4.11.0.86
+rapidocr==3.7.0
