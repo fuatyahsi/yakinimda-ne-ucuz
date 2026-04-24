@@ -1,84 +1,144 @@
-# FridgeChef - Buzdolabı Şef 🧑‍🍳
+# Yakınımda En Ucuz 
 
-Buzdolabındaki malzemelere göre yemek tarifi öneren mobil uygulama.
-Recipe suggestion app based on your fridge ingredients.
+Yakındaki market ve kozmetik mağazalarında aynı ürünü karşılaştırıp en uygun fiyatı bulan Flutter uygulaması.
 
-## Özellikler / Features
+Find the cheapest price for the same product across nearby supermarkets and drugstores.
 
-- **Malzeme Seçimi**: Buzdolabındaki ve stoğundaki malzemeleri seç
-- **Akıllı Tarif Eşleştirme**: Malzemelerine göre yapabileceğin tarifleri bul
-- **Eksik Malzeme Tespiti**: Hangi malzemenin eksik olduğunu gör
-- **Adım Adım Hazırlanış**: Detaylı pişirme adımlarını takip et
-- **Çoklu Dil**: Türkçe ve İngilizce dil desteği
-- **Karanlık Mod**: Göz dostu karanlık tema
-- **Favoriler**: Beğendiğin tarifleri kaydet
+## Ne yapar?
 
-## Kurulum / Setup
+- **Konum + market seçimi** → kullanıcı hangi zincirleri takip ettiğini seçer (A101, BİM, Migros, ŞOK, CarrefourSA, Tarım Kredi)
+- **Fiyat karşılaştırma** → aynı ürünün seçili zincirlerdeki güncel fiyatını yan yana gösterir
+- **Alışveriş listesi** → kullanıcı kararlı liste, barkod taramayla ekleme
+- **Aktüel broşürler** → A101/BİM/ŞOK haftalık indirim kataloglarını inline olarak okur
+- **Kozmetik keşfi** → Gratis, Rossmann vb. mağazalar için ayrı akış
+
+## Mimari
+
+\`\`\`
+┌─────────────────────┐       ┌──────────────────────┐
+│  Flutter app (iOS/  │  ──▶  │  Supabase (primary)  │
+│  Android/Desktop)   │       │  prices, products,   │
+└─────────────────────┘       │  markets, runs       │
+         │                    └──────────────────────┘
+         │ fallback                       ▲
+         ▼                                │ REST upsert
+┌─────────────────────┐       ┌──────────────────────┐
+│  marketfiyati.org.  │  ◀──  │  backend/workers/    │
+│  tr public API      │       │  (Python scrapers)   │
+└─────────────────────┘       └──────────────────────┘
+                                         ▲
+                                         │ 2x/day cron
+                              ┌──────────────────────┐
+                              │  GitHub Actions      │
+                              └──────────────────────┘
+\`\`\`
+
+**Primary source:** Supabase `prices` tablosu, GitHub Actions cron'u ile günde 2 kez doldurulur.
+
+**Fallback:** [marketfiyati.org.tr](https://marketfiyati.org.tr) — TÜBİTAK destekli public aggregator, 6 zincir için sorgu; Supabase boş döner veya offline ise kullanılır.
+
+## Proje yapısı
+
+\`\`\`
+lib/                            # Flutter uygulaması
+├── config/
+│   └── supabase_config.dart    # Build-time dart-define ile okunur
+├── screens/
+│   ├── home_shell_screen.dart
+│   ├── smart_actueller_screen.dart
+│   ├── market_shopping_list_screen.dart
+│   ├── cosmetic_discovery_screen.dart
+│   ├── supabase_markets_screen.dart
+│   └── barcode_scanner_screen.dart
+├── providers/                  # Provider pattern
+├── services/                   # Supabase + marketfiyati client
+└── models/
+
+backend/workers/                # Python scraperlar + Supabase writer
+├── core.py                     # SupabaseClient (retry + session refresh)
+├── run_marketfiyati.py         # 6 markete fan-out sweep
+├── run_worker.py               # Tek market parser runner
+├── sanity_check.py             # Post-run delta alarmı
+└── parsers/                    # Market-bazlı parserlar
+
+tools/akakce_worker/            # Yedek fiyat kaynağı (akakce.com)
+.github/workflows/              # Cron + CI
+\`\`\`
+
+## Kurulum
 
 ### Gereksinimler
 - Flutter SDK >= 3.2.0
-- Dart SDK >= 3.2.0
-- Android Studio / Xcode
+- Python 3.11 (backend scraperlar için)
+- Supabase projesi (URL + anon key + service role key)
 
-### Çalıştırma
+### Flutter uygulaması
 
-```bash
-# Bağımlılıkları yükle
+Supabase bağlantı bilgilerini `--dart-define` ile ver — **ASLA repo'ya commit etme**:
+
+\`\`\`bash
 flutter pub get
 
-# Uygulamayı çalıştır
-flutter run
+flutter run \
+  --dart-define=SUPABASE_URL=https://<project>.supabase.co \
+  --dart-define=SUPABASE_ANON_KEY=sb_publishable_xxx
 
-# Android APK oluştur
-flutter build apk --release
+# Android release
+flutter build apk --release \
+  --dart-define=SUPABASE_URL=... \
+  --dart-define=SUPABASE_ANON_KEY=...
+\`\`\`
 
-# iOS build
-flutter build ios --release
-```
+`SUPABASE_ANON_KEY` = `sb_publishable_*` formatındaki public key. Service role key **kesinlikle** client'a konmamalı — RLS sadece anon key ile uygulanır.
 
-## Proje Yapısı
+### Backend scraperlar
 
-```
-lib/
-├── main.dart                    # Uygulama giriş noktası
-├── l10n/
-│   └── app_localizations.dart   # Çoklu dil desteği (TR/EN)
-├── models/
-│   ├── ingredient.dart          # Malzeme veri modeli
-│   └── recipe.dart              # Tarif veri modeli
-├── providers/
-│   └── app_provider.dart        # State management (Provider)
-├── screens/
-│   ├── home_screen.dart         # Ana sayfa
-│   ├── ingredient_selection_screen.dart  # Malzeme seçim ekranı
-│   ├── recipe_list_screen.dart  # Tarif listesi ekranı
-│   ├── recipe_detail_screen.dart # Tarif detay ekranı
-│   └── settings_screen.dart     # Ayarlar ekranı
-├── services/
-│   └── recipe_service.dart      # Tarif eşleştirme servisi
-└── utils/
-    └── app_theme.dart           # Tema ayarları
+\`\`\`bash
+cd backend/workers
+pip install requests
 
-assets/
-├── data/
-│   ├── ingredients.json         # Malzeme veritabanı (50+ malzeme)
-│   └── recipes.json             # Tarif veritabanı (11 Türk yemeği)
-└── images/
-```
+# Tek market
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+  python run_worker.py --market a101
 
-## Mağaza Yayını / Store Publishing
+# Tüm 6 market sweep (marketfiyati üzerinden)
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+  python run_marketfiyati.py --markets a101,bim,migros,sok,carrefoursa,tarim-kredi
 
-### Google Play Store
-1. `flutter build appbundle --release` ile AAB oluştur
-2. Google Play Console'da yeni uygulama oluştur
-3. AAB dosyasını yükle
-4. Store listing bilgilerini doldur
+# Önceki run'ın cache'inden kurtarma
+python run_worker.py --market a101 --from-cache
+\`\`\`
 
-### Apple App Store
-1. `flutter build ios --release` ile iOS build oluştur
-2. Xcode'da Archive yap
-3. App Store Connect'e yükle
-4. App Store listing bilgilerini doldur
+### Cron + GitHub Actions
+
+`.github/workflows/marketfiyati-sweep.yml` günde 2 kez (TR 08:00 + 20:00) otomatik çalışır. Repo secret'ları:
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY` (⚠ anon değil, service_role)
+
+Her sweep sonunda `sanity_check.py` son 7 günlük ortalamayla kıyaslama yapar; %50'den fazla düşüş veya 0 yazım olursa job fail olur.
+
+## Veri akışı — bir sweep'in ömrü
+
+1. Cron tetikler → `run_marketfiyati.py`
+2. Keyword listesi için `POST /api/v2/search` → marketfiyati
+3. Response 6 markete fan-out, her biri `backend/workers/core.py::SupabaseClient.upsert` ile `prices` tablosuna yazılır
+4. Retry + session refresh: SSL/ConnectionError'da exponential backoff + session rebuild
+5. `scrape_runs` tablosuna bu sweep için row insert edilir (`prices_added`, `status`)
+6. Cache (`backend/workers/cache/*.json`) artifact olarak upload edilir — kaçan kayıtlar için `--from-cache` kurtarma yolu
+7. `sanity_check.py` delta kontrolü yapar
+
+## Desteklenen zincirler
+
+| Zincir         | Kapsam           | 
+|----------------|------------------|
+| A101           |  primary         | 
+| BİM            |  primary         | 
+| Migros         |  primary         | 
+| ŞOK            |  primary         | 
+| CarrefourSA    |  primary         | 
+| Tarım Kredi    |  primary         |
+
 
 ## Lisans
-MIT License
+
+Private project. © Fuat Yahşi, 2026.
