@@ -1,1 +1,0 @@
-The Smart Kitchen Assistant has been upgraded. You can now plan menus first, track pantry stock with quantities, and generate clearer shopping lists from missing items.
