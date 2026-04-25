@@ -39,17 +39,21 @@ if str(_HERE) not in sys.path:
 import requests  # noqa: E402
 
 from core import (  # noqa: E402
+    BulkProductResolver,
     BulkWriter,
     SupabaseClient,
     RunStats,
     WorkerItem,
-    find_or_create_product,
     finish_scrape_run,
     insert_campaign,
     insert_price,
     start_scrape_run,
 )
 from parsers import get_parser, list_markets  # noqa: E402
+
+# Step 5b: tek seferde resolver'a verilecek item sayisi. Bkz.
+# run_marketfiyati.py'deki ayni sabit — PostgREST in.() URL guvenligi icin.
+RESOLVE_BATCH_SIZE = 50
 
 
 # ---------------------------------------------------------------------
@@ -250,8 +254,11 @@ def run(args: argparse.Namespace) -> int:
 
     # Supabase'e yaz
     client = SupabaseClient.from_env()
-    # prices + campaigns icin buffered bulk writer (500'lu chunk).
-    # find_or_create_product hala raw client'ta — product_id senkron lazim.
+    # Step 5a: prices+campaigns icin buffered bulk writer (500'lu chunk).
+    # Step 5b: product/alias cozumu de bulk — items 50'lik chunk'lara
+    # bolunur, her chunk icin 4 RTT (alias SELECT, products SELECT,
+    # products INSERT, alias UPSERT). Onceki "her item 1-4 RTT"
+    # davranisinin yerine gecer.
     writer = BulkWriter(client, flush_size=500)
     run_id = start_scrape_run(
         client,
@@ -260,26 +267,35 @@ def run(args: argparse.Namespace) -> int:
         source_label=parser.source_label,
     )
     stats = RunStats()
+    resolver = BulkProductResolver(client, parser.alias_source, stats)
 
     started = time.time()
-    for index, item in enumerate(items, start=1):
-        try:
-            product_id = find_or_create_product(
-                client, item, parser.alias_source, stats
-            )
-            insert_price(writer, product_id, item, run_id,
-                         parser.source_label, stats)
-            insert_campaign(writer, product_id, item, stats)
-        except requests.HTTPError as error:
-            stats.errors.append(f"item {index}: HTTP {error}")
-        except Exception as error:  # pragma: no cover
-            stats.errors.append(
-                f"item {index}: {type(error).__name__}: {error}"
-            )
-        if index % 25 == 0:
+    for batch_start in range(0, len(items), RESOLVE_BATCH_SIZE):
+        chunk = items[batch_start: batch_start + RESOLVE_BATCH_SIZE]
+        mapping = resolver.resolve_batch(chunk)
+        for offset, item in enumerate(chunk):
+            global_idx = batch_start + offset + 1
+            try:
+                product_id = mapping.get(offset)
+                insert_price(writer, product_id, item, run_id,
+                             parser.source_label, stats)
+                insert_campaign(writer, product_id, item, stats)
+            except requests.HTTPError as error:
+                stats.errors.append(f"item {global_idx}: HTTP {error}")
+            except Exception as error:  # pragma: no cover
+                stats.errors.append(
+                    f"item {global_idx}: {type(error).__name__}: {error}"
+                )
+        # Progress: 5 batch'te bir (250 item) ya da son batch'te.
+        end = min(batch_start + RESOLVE_BATCH_SIZE, len(items))
+        if (
+            end == len(items)
+            or (end // RESOLVE_BATCH_SIZE) % 5 == 0
+        ):
             print(
-                f"  .. {index}/{len(items)} — "
-                f"match={stats.products_matched}  new={stats.products_added}"
+                f"  .. {end}/{len(items)} — "
+                f"match={stats.products_matched}  new={stats.products_added}  "
+                f"resolver_batches={resolver.batches_resolved}"
             )
 
     # Bekleyen prices/campaigns satirlarini bosalt — finish_scrape_run'dan ONCE.

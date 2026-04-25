@@ -54,11 +54,11 @@ if str(_HERE) not in sys.path:
 import requests  # noqa: E402
 
 from core import (  # noqa: E402
+    BulkProductResolver,
     BulkWriter,
     RunStats,
     SupabaseClient,
     WorkerItem,
-    find_or_create_product,
     finish_scrape_run,
     insert_campaign,
     insert_price,
@@ -83,6 +83,12 @@ DEFAULT_TARGETS: tuple[str, ...] = (
     "migros",
     "tarim-kredi",
 )
+
+# Step 5b: per-market kac item biriktirip toplu resolve+yazim yapacak.
+# 50: PostgREST `in.()` URL'i ~6KB civari (alias slug ~80ch + canonical_name
+# ~100ch x 50). 4-8KB nginx default'una guvenli mesafe. Dusuk olursa per-batch
+# overhead artiyor, yuksek olursa URL too long riski.
+RESOLVE_BATCH_SIZE = 50
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -176,7 +182,9 @@ def run(args: argparse.Namespace) -> int:
         state: dict = {
             "parser": parser,
             "market_adi": market_adi,
-            "items": [],          # cache icin
+            "items": [],          # cache icin (sweep boyunca tum item'lar)
+            "pending": [],        # Step 5b: resolver'a verilecek bekleyenler
+            "resolver": None,     # Supabase yazimi varsa init edilir
             "stats": RunStats(),
             "run_id": None,
         }
@@ -186,6 +194,9 @@ def run(args: argparse.Namespace) -> int:
                 market_id=market_id,
                 source_type=parser.source_type,
                 source_label=parser.source_label,
+            )
+            state["resolver"] = BulkProductResolver(
+                supabase, parser.alias_source, state["stats"]
             )
             print(f"[mf] {market_id}: scrape_run #{state['run_id']} acildi")
         per_market[market_id] = state
@@ -231,30 +242,12 @@ def run(args: argparse.Namespace) -> int:
                     state["items"].append(item)
 
                     if supabase is not None:
-                        try:
-                            # find_or_create_product hala raw client —
-                            # product_id'yi anlik okumak gerekiyor.
-                            product_id = find_or_create_product(
-                                supabase, item, parser.alias_source, state["stats"]
-                            )
-                            # insert_price / insert_campaign BulkWriter'a
-                            # buffered yazar; flush_all() finalize'da.
-                            insert_price(
-                                writer, product_id, item, state["run_id"],
-                                parser.source_label, state["stats"],
-                            )
-                            insert_campaign(
-                                writer, product_id, item, state["stats"]
-                            )
-                            total_writes += 1
-                        except requests.HTTPError as err:
-                            state["stats"].errors.append(
-                                f"kw={kw!r} pid={pid}: HTTP {err}"
-                            )
-                        except Exception as err:  # pragma: no cover
-                            state["stats"].errors.append(
-                                f"kw={kw!r} pid={pid}: "
-                                f"{type(err).__name__}: {err}"
+                        # Step 5b: anlik find_or_create_product yerine
+                        # pending buffer'a koy. Buffer dolunca toplu resolve+yaz.
+                        state["pending"].append(item)
+                        if len(state["pending"]) >= RESOLVE_BATCH_SIZE:
+                            total_writes += _flush_pending(
+                                state, writer, kw_label=kw
                             )
         except Exception as err:
             print(f"[mf] keyword {kw!r} FAILED: {err}")
@@ -277,6 +270,17 @@ def run(args: argparse.Namespace) -> int:
     # Finalize
     # --------------------------------------------------------------
     if supabase is not None:
+        # Once her marketin pending buffer'ini son kez bosalt — bunlar henuz
+        # resolve edilmemis item'lar. Sonra BulkWriter'i flush et.
+        for market_id, state in per_market.items():
+            if state["pending"]:
+                wrote = _flush_pending(state, writer, kw_label="<final>")
+                total_writes += wrote
+                print(
+                    f"[mf] {market_id}: final pending flush, "
+                    f"{wrote} item resolved+yazildi"
+                )
+
         # ONCE bekleyen tum bulk insert'leri yaz — finish_scrape_run sayaci
         # bu flush'tan sonraki gercek sayilarla esitlenecek. Ayni anda hata
         # cikarsa tum marketlerin scrape_run'ina partial/failed yansir.
@@ -324,6 +328,65 @@ def run(args: argparse.Namespace) -> int:
             )
 
     return 0
+
+
+def _flush_pending(
+    state: dict,
+    writer: BulkWriter | None,
+    *,
+    kw_label: str,
+) -> int:
+    """state['pending']'i resolver ile coz, prices+campaigns yaz, buffer'i bosalt.
+
+    Donen deger: yazilan item sayisi (insert_price tetiklenen).
+    """
+    pending: list[WorkerItem] = state["pending"]
+    if not pending or writer is None:
+        return 0
+
+    resolver: BulkProductResolver | None = state["resolver"]
+    parser = state["parser"]
+    stats: RunStats = state["stats"]
+    run_id = state["run_id"]
+
+    if resolver is None:
+        # supabase=None senaryosu — buraya gelmemeli ama defansif.
+        state["pending"] = []
+        return 0
+
+    try:
+        mapping = resolver.resolve_batch(pending)
+    except Exception as err:  # pragma: no cover
+        # resolve_batch zaten kendi icinde fallback ediyor; buraya genelde
+        # ulasilmaz. Yine de defansif: tum batch'i kayip say, devam et.
+        stats.errors.append(
+            f"resolve_batch unexpected ({kw_label}): "
+            f"{type(err).__name__}: {err}"
+        )
+        state["pending"] = []
+        return 0
+
+    written = 0
+    for idx, item in enumerate(pending):
+        product_id = mapping.get(idx)
+        try:
+            insert_price(
+                writer, product_id, item, run_id,
+                parser.source_label, stats,
+            )
+            insert_campaign(writer, product_id, item, stats)
+            written += 1
+        except requests.HTTPError as err:
+            stats.errors.append(
+                f"insert ({kw_label}) idx={idx}: HTTP {err}"
+            )
+        except Exception as err:  # pragma: no cover
+            stats.errors.append(
+                f"insert ({kw_label}) idx={idx}: "
+                f"{type(err).__name__}: {err}"
+            )
+    state["pending"] = []
+    return written
 
 
 def _cache_path(market_id: str) -> Path:

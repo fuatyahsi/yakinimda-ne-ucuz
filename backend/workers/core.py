@@ -420,6 +420,230 @@ def find_or_create_product(
     return product_id
 
 
+# ---------------------------------------------------------------------
+# Bulk product/alias resolver (Step 5b)
+# ---------------------------------------------------------------------
+# Performans notu — find_or_create_product item basi 1-4 RTT yapiyordu
+# (alias SELECT, products SELECT, INSERT, alias UPSERT). 5528 item × ~1.5
+# RTT × 400ms ≈ 55dk. BulkProductResolver bu adimlarin her birini "batch
+# halinde" calistirarak per-batch (50 item) 4 RTT'e indirir:
+#
+#   1. SELECT product_aliases WHERE alias=in.(...) AND source=eq.X
+#   2. SELECT products       WHERE canonical_name=in.(...)   (sadece eksikler)
+#   3. INSERT products       (canonical_name'i hala olmayan kalan)
+#   4. UPSERT product_aliases (eksik alias'lari product_id'ye bagla)
+#
+# Beklenti: 5528 item / 50 = ~110 batch × 4 RTT = ~440 RTT (~3dk).
+#
+# Hata durumu — graceful fallback: batch operasyonlari herhangi bir
+# noktada exception firlattigi durumda, resolver o batch'in items'larini
+# tek tek find_or_create_product ile dener. Item kacirilmaz, sadece
+# yavaslar.
+def _postgrest_in_value(value: str) -> str:
+    """PostgREST 'in.(...)' filter'i icin tek bir degeri quote+escape eder."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _build_in_filter(values: list[str]) -> str:
+    """PostgREST in.(...) sag tarafini olustur. Caller value setini dedupe etmis olmali."""
+    return f"in.({','.join(_postgrest_in_value(v) for v in values)})"
+
+
+class BulkProductResolver:
+    """Batch halinde alias→product_id resolve eder.
+
+    Bir market icin tek instance. `alias_source` parser'in alias_source'u
+    olmali (ornek: 'marketfiyati', 'a101', 'bim').
+
+    Kullanim:
+        resolver = BulkProductResolver(client, parser.alias_source, stats)
+        for chunk in chunks_of_size(items, 50):
+            mapping = resolver.resolve_batch(chunk)
+            for idx, item in enumerate(chunk):
+                pid = mapping.get(idx)
+                insert_price(writer, pid, item, run_id, ..., stats)
+                insert_campaign(writer, pid, item, stats)
+    """
+
+    def __init__(
+        self,
+        client: SupabaseClient,
+        alias_source: str,
+        stats: RunStats,
+    ) -> None:
+        self._client = client
+        self._alias_source = alias_source
+        self._stats = stats
+        self.batches_resolved: int = 0
+        self.fallback_items: int = 0
+
+    def resolve_batch(self, items: list[WorkerItem]) -> dict[int, str | None]:
+        """Batch'in her item'i icin index → product_id mapping'i dondur.
+
+        None → resolve fail (item insert_price'a None product_id ile gidebilir;
+        prices.product_id NULL allowed, campaigns degil — caller filtrelemeli).
+        """
+        if not items:
+            return {}
+        try:
+            return self._resolve_batch_fast(items)
+        except Exception as err:
+            # Bulk path patladi — tek tek fallback. find_or_create_product
+            # zaten try/except ile sarili degil, caller'in halletmesi lazim.
+            self._stats.errors.append(
+                f"bulk resolve fell back: {type(err).__name__}: {err}"
+            )
+            return self._resolve_batch_fallback(items)
+
+    # ----- iç akış -----------------------------------------------------
+    def _resolve_batch_fast(
+        self, items: list[WorkerItem]
+    ) -> dict[int, str | None]:
+        # 1) Her item icin alias topla.
+        aliases_by_idx: dict[int, str] = {
+            idx: item.canonical_key() for idx, item in enumerate(items)
+        }
+        unique_aliases = sorted({a for a in aliases_by_idx.values() if a})
+        alias_to_pid: dict[str, str] = {}
+
+        if unique_aliases:
+            rows = self._client.select(
+                "product_aliases",
+                {
+                    "alias": _build_in_filter(unique_aliases),
+                    "source": f"eq.{self._alias_source}",
+                    "select": "alias,product_id",
+                },
+            )
+            for r in rows:
+                alias_to_pid[r["alias"]] = r["product_id"]
+
+        # 2) Eksik alias'lari bul, bunlarin canonical_name set'ini cikar.
+        missing_idxs = [
+            idx
+            for idx, a in aliases_by_idx.items()
+            if a and a not in alias_to_pid
+        ]
+        names_by_idx: dict[int, str] = {
+            idx: items[idx].product_name for idx in missing_idxs
+        }
+        unique_names = sorted({n for n in names_by_idx.values() if n})
+        name_to_pid: dict[str, str] = {}
+
+        if unique_names:
+            rows = self._client.select(
+                "products",
+                {
+                    "canonical_name": _build_in_filter(unique_names),
+                    "select": "id,canonical_name",
+                },
+            )
+            for r in rows:
+                name_to_pid[r["canonical_name"]] = r["id"]
+
+        # 3) Hala yoklari INSERT et. Ayni canonical_name farkli item'larda
+        #    tekrar etmis olabilir — ilk geleni al (deterministik for stable
+        #    brand/image_url choice).
+        names_to_create = [n for n in unique_names if n not in name_to_pid]
+        if names_to_create:
+            first_item_for_name: dict[str, WorkerItem] = {}
+            for idx in missing_idxs:
+                n = names_by_idx[idx]
+                if n in names_to_create and n not in first_item_for_name:
+                    first_item_for_name[n] = items[idx]
+
+            payloads = []
+            for name in names_to_create:
+                it = first_item_for_name[name]
+                size, unit = extract_package(name)
+                payloads.append(
+                    {
+                        "canonical_name": name,
+                        "brand": it.brand,
+                        "package_size": size,
+                        "package_unit": unit,
+                        "search_text": normalize_search_text(name),
+                        "image_url": it.image_url,
+                    }
+                )
+            created = self._client.insert("products", payloads)
+            for row in created:
+                name_to_pid[row["canonical_name"]] = row["id"]
+            self._stats.products_added += len(created)
+
+        # 4) Eksik (alias,source) ciftlerini product_id'ye bagla, bulk UPSERT.
+        new_alias_rows: list[dict] = []
+        seen_alias: set[tuple[str, str]] = set()
+        for idx in missing_idxs:
+            a = aliases_by_idx[idx]
+            n = names_by_idx[idx]
+            pid = name_to_pid.get(n)
+            if pid is None:
+                continue
+            alias_to_pid[a] = pid
+            key = (a, self._alias_source)
+            if key in seen_alias:
+                continue
+            seen_alias.add(key)
+            new_alias_rows.append(
+                {
+                    "product_id": pid,
+                    "alias": a,
+                    "source": self._alias_source,
+                    "confidence": items[idx].confidence,
+                }
+            )
+
+        if new_alias_rows:
+            try:
+                self._client.upsert(
+                    "product_aliases",
+                    new_alias_rows,
+                    on_conflict="alias,source",
+                )
+            except requests.HTTPError as err:
+                # Alias UPSERT patlasa bile alias_to_pid mapping zaten elimizde —
+                # mevcut item'lar product_id'lerini alabilir; sadece alias kaydi
+                # eksik (gelecek run aynisini cozer).
+                self._stats.errors.append(f"bulk alias upsert: {err}")
+
+        # 5) products_matched: alias path'i ile match olan item sayisi
+        #    (zaten alias_to_pid'de olanlar — yani missing_idxs'te olmayanlar).
+        matched_via_alias = len(items) - len(missing_idxs)
+        self._stats.products_matched += matched_via_alias
+
+        # 6) Result mapping
+        self.batches_resolved += 1
+        return {
+            idx: alias_to_pid.get(a) for idx, a in aliases_by_idx.items()
+        }
+
+    def _resolve_batch_fallback(
+        self, items: list[WorkerItem]
+    ) -> dict[int, str | None]:
+        """Batch operasyonu patladiginda tek tek find_or_create_product kullan."""
+        result: dict[int, str | None] = {}
+        for idx, item in enumerate(items):
+            try:
+                result[idx] = find_or_create_product(
+                    self._client, item, self._alias_source, self._stats
+                )
+            except requests.HTTPError as err:
+                self._stats.errors.append(
+                    f"fallback resolve item {idx}: {err}"
+                )
+                result[idx] = None
+            except Exception as err:  # pragma: no cover
+                self._stats.errors.append(
+                    f"fallback resolve item {idx}: "
+                    f"{type(err).__name__}: {err}"
+                )
+                result[idx] = None
+            self.fallback_items += 1
+        return result
+
+
 def insert_price(
     inserter: "SupabaseClient | BulkWriter",
     product_id: str | None,
