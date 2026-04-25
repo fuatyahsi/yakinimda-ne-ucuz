@@ -102,15 +102,13 @@ class Category:
 
 @dataclass
 class SelectedPrice:
-    """Bir urun icin tek bir depot'tan secilmis fiyat (genelde min)."""
-    depot_id: str
-    depot_name: str
+    """Bir urun icin tek bir depot'tan secilmis fiyat (genelde min).
+
+    Yalnizca code path'te ihtiyac olan 3 alani tutar; geri kalan ham depot
+    payload'i `raw` icinde kalir (debug + future-proof).
+    """
     price: float
-    unit_price: str | None
     percentage: float
-    longitude: float | None
-    latitude: float | None
-    index_time: str | None
     raw: dict
 
 
@@ -317,7 +315,6 @@ class MarketFiyatiClient:
 
         seen_ids: set[str] = set()
         for idx, kw in enumerate(kws, start=1):
-            before = len(seen_ids)
             kw_yielded = 0
             try:
                 for product in self.iter_products_for_keyword(
@@ -383,14 +380,8 @@ def select_price_for_market(
         pct = 0.0
 
     return SelectedPrice(
-        depot_id=str(chosen.get("depotId") or ""),
-        depot_name=str(chosen.get("depotName") or ""),
         price=price,
-        unit_price=chosen.get("unitPrice"),
         percentage=pct,
-        longitude=chosen.get("longitude"),
-        latitude=chosen.get("latitude"),
-        index_time=chosen.get("indexTime"),
         raw=chosen,
     )
 

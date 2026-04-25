@@ -163,11 +163,7 @@ class MarketFiyatiParserBase(BaseParser):
             if selected is None:
                 # fallback: raw fiyat ile
                 from ._marketfiyati import SelectedPrice
-                selected = SelectedPrice(
-                    depot_id="", depot_name="", price=0.0,
-                    unit_price=None, percentage=0.0,
-                    longitude=None, latitude=None, index_time=None, raw={},
-                )
+                selected = SelectedPrice(price=0.0, percentage=0.0, raw={})
             item = self._product_to_item(row, selected)
             if item is not None:
                 return item

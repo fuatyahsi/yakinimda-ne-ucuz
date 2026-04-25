@@ -193,7 +193,6 @@ def run(args: argparse.Namespace) -> int:
     # Sweep
     # --------------------------------------------------------------
     started = time.time()
-    total_products_seen = 0
     total_writes = 0
 
     for kw_idx, kw in enumerate(keywords, start=1):
@@ -229,7 +228,6 @@ def run(args: argparse.Namespace) -> int:
                         seen.add(pid)
 
                     state["items"].append(item)
-                    total_products_seen += 1
 
                     if supabase is not None:
                         try:
