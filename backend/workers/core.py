@@ -189,6 +189,82 @@ class SupabaseClient:
 
 
 # ---------------------------------------------------------------------
+# Bulk insert writer
+# ---------------------------------------------------------------------
+# Performans notu — 2026-04-24 live run'da 5528 fiyat satiri tek tek
+# POST edildigi icin sweep ~86dk surdu (RTT ~400ms ortalama × ~16k call).
+# PostgREST tek POST govdesinde array kabul ediyor; insert_price /
+# insert_campaign cagri sayisini 500'luk chunk yazarak ~5528'den ~12'ye
+# dusurebiliriz. Beklenti: prices+campaigns uzerinde ~30dk net kazanc.
+# (find_or_create_product hala satir basi calisir — onun bulk hali Step 5b.)
+#
+# Kullanim:
+#     writer = BulkWriter(client, flush_size=500)
+#     ...
+#     insert_price(writer, ...)            # buffered
+#     insert_campaign(writer, ...)         # buffered
+#     ...
+#     writer.flush_all()                   # finish_scrape_run'dan ONCE
+#     finish_scrape_run(client, ...)       # client (raw) — buffer disi
+#
+# Onemli: BulkWriter SADECE INSERT'i bufferlar. SELECT/UPSERT/UPDATE
+# pass-through degil; bunlar icin raw SupabaseClient kullan.
+class BulkWriter:
+    """Buffered drop-in for SupabaseClient.insert(table, rows)."""
+
+    def __init__(
+        self,
+        client: SupabaseClient,
+        *,
+        flush_size: int = 500,
+    ) -> None:
+        if flush_size <= 0:
+            raise ValueError("flush_size > 0 olmali.")
+        self._client = client
+        self._flush_size = flush_size
+        self._buffers: dict[str, list[dict]] = {}
+        self.batches_flushed: int = 0
+        self.rows_flushed: int = 0
+
+    def insert(self, table: str, rows: list[dict]) -> list[dict]:
+        """Buffered insert. Caller donus degerine GUVENMEMELI;
+        flush sonradan olabilir, bos liste donulur."""
+        if not rows:
+            return []
+        buf = self._buffers.setdefault(table, [])
+        buf.extend(rows)
+        # Birikim flush_size'a ulastiysa hemen yaz (bellek + run_id delta
+        # cikarsa erken hata gorulsun).
+        while len(buf) >= self._flush_size:
+            chunk = buf[: self._flush_size]
+            del buf[: self._flush_size]
+            self._flush_chunk(table, chunk)
+        return []
+
+    def _flush_chunk(self, table: str, chunk: list[dict]) -> None:
+        if not chunk:
+            return
+        self._client.insert(table, chunk)
+        self.batches_flushed += 1
+        self.rows_flushed += len(chunk)
+
+    def flush(self, table: str) -> None:
+        """Bir tablonun bekleyen butun satirlarini yaz."""
+        chunk = self._buffers.pop(table, [])
+        self._flush_chunk(table, chunk)
+
+    def flush_all(self) -> None:
+        """Tum tablolarda bekleyenleri yaz. finish_scrape_run'dan ONCE cagir."""
+        # Determinizm icin sirali flush.
+        for table in sorted(self._buffers):
+            self.flush(table)
+
+    def __len__(self) -> int:
+        """Bekleyen toplam satir sayisi (debug)."""
+        return sum(len(rows) for rows in self._buffers.values())
+
+
+# ---------------------------------------------------------------------
 # Normalleştirme yardımcıları
 # ---------------------------------------------------------------------
 def slugify(value: str) -> str:
@@ -345,13 +421,15 @@ def find_or_create_product(
 
 
 def insert_price(
-    client: SupabaseClient,
+    inserter: "SupabaseClient | BulkWriter",
     product_id: str | None,
     item: WorkerItem,
     run_id: int,
     source_label: str,
     stats: RunStats,
 ) -> None:
+    """Tek fiyat satirini yaz. `inserter` SupabaseClient ise tek POST,
+    BulkWriter ise buffered (flush_size'a ulasinca toplu POST)."""
     if item.discount_price is None:
         return
     payload = {
@@ -372,18 +450,20 @@ def insert_price(
         "scrape_run_id": run_id,
     }
     try:
-        client.insert("prices", [payload])
+        inserter.insert("prices", [payload])
         stats.prices_added += 1
     except requests.HTTPError as error:
         stats.errors.append(f"price insert failed: {error}")
 
 
 def insert_campaign(
-    client: SupabaseClient,
+    inserter: "SupabaseClient | BulkWriter",
     product_id: str | None,
     item: WorkerItem,
     stats: RunStats,
 ) -> None:
+    """Tek kampanya satirini yaz. inserter parametresi insert_price ile ayni
+    semantige sahip (raw client veya BulkWriter)."""
     if (
         not item.valid_from
         or not item.valid_until
@@ -406,7 +486,7 @@ def insert_campaign(
         "raw_payload": item.raw,
     }
     try:
-        client.insert("campaigns", [payload])
+        inserter.insert("campaigns", [payload])
         stats.campaigns_added += 1
     except requests.HTTPError as error:
         stats.errors.append(f"campaign insert failed: {error}")

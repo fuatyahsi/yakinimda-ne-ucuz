@@ -54,6 +54,7 @@ if str(_HERE) not in sys.path:
 import requests  # noqa: E402
 
 from core import (  # noqa: E402
+    BulkWriter,
     RunStats,
     SupabaseClient,
     WorkerItem,
@@ -161,8 +162,13 @@ def run(args: argparse.Namespace) -> int:
     # Per-market state
     per_market: dict[str, dict] = {}
     supabase: SupabaseClient | None = None
+    writer: BulkWriter | None = None
     if not args.dry_run:
         supabase = SupabaseClient.from_env()
+        # Tek BulkWriter tum marketler arasinda paylasilir; prices ve
+        # campaigns tablolari icin ayri buffer'lar tutulur. 500'luk chunk =
+        # ~12 bulk POST (5528 satir icin) yerine ~5528 tekil POST.
+        writer = BulkWriter(supabase, flush_size=500)
 
     for market_id, market_adi in targets:
         parser = get_parser(market_id)
@@ -227,15 +233,19 @@ def run(args: argparse.Namespace) -> int:
 
                     if supabase is not None:
                         try:
+                            # find_or_create_product hala raw client —
+                            # product_id'yi anlik okumak gerekiyor.
                             product_id = find_or_create_product(
                                 supabase, item, parser.alias_source, state["stats"]
                             )
+                            # insert_price / insert_campaign BulkWriter'a
+                            # buffered yazar; flush_all() finalize'da.
                             insert_price(
-                                supabase, product_id, item, state["run_id"],
+                                writer, product_id, item, state["run_id"],
                                 parser.source_label, state["stats"],
                             )
                             insert_campaign(
-                                supabase, product_id, item, state["stats"]
+                                writer, product_id, item, state["stats"]
                             )
                             total_writes += 1
                         except requests.HTTPError as err:
@@ -268,6 +278,25 @@ def run(args: argparse.Namespace) -> int:
     # Finalize
     # --------------------------------------------------------------
     if supabase is not None:
+        # ONCE bekleyen tum bulk insert'leri yaz — finish_scrape_run sayaci
+        # bu flush'tan sonraki gercek sayilarla esitlenecek. Ayni anda hata
+        # cikarsa tum marketlerin scrape_run'ina partial/failed yansir.
+        if writer is not None:
+            try:
+                writer.flush_all()
+                print(
+                    f"[mf] bulk flush: {writer.batches_flushed} batch, "
+                    f"{writer.rows_flushed} satir"
+                )
+            except Exception as flush_err:
+                print(f"[mf] HATA: flush_all patladi — {flush_err}")
+                # Hatayi tum marketlerin stats'ina yaz
+                for state in per_market.values():
+                    state["stats"].errors.append(
+                        f"bulk flush_all: "
+                        f"{type(flush_err).__name__}: {flush_err}"
+                    )
+
         for market_id, state in per_market.items():
             stats: RunStats = state["stats"]
             status = "success" if not stats.errors else (

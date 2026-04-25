@@ -39,6 +39,7 @@ if str(_HERE) not in sys.path:
 import requests  # noqa: E402
 
 from core import (  # noqa: E402
+    BulkWriter,
     SupabaseClient,
     RunStats,
     WorkerItem,
@@ -249,6 +250,9 @@ def run(args: argparse.Namespace) -> int:
 
     # Supabase'e yaz
     client = SupabaseClient.from_env()
+    # prices + campaigns icin buffered bulk writer (500'lu chunk).
+    # find_or_create_product hala raw client'ta — product_id senkron lazim.
+    writer = BulkWriter(client, flush_size=500)
     run_id = start_scrape_run(
         client,
         market_id=parser.market_id,
@@ -263,9 +267,9 @@ def run(args: argparse.Namespace) -> int:
             product_id = find_or_create_product(
                 client, item, parser.alias_source, stats
             )
-            insert_price(client, product_id, item, run_id,
+            insert_price(writer, product_id, item, run_id,
                          parser.source_label, stats)
-            insert_campaign(client, product_id, item, stats)
+            insert_campaign(writer, product_id, item, stats)
         except requests.HTTPError as error:
             stats.errors.append(f"item {index}: HTTP {error}")
         except Exception as error:  # pragma: no cover
@@ -277,6 +281,18 @@ def run(args: argparse.Namespace) -> int:
                 f"  .. {index}/{len(items)} — "
                 f"match={stats.products_matched}  new={stats.products_added}"
             )
+
+    # Bekleyen prices/campaigns satirlarini bosalt — finish_scrape_run'dan ONCE.
+    try:
+        writer.flush_all()
+        print(
+            f"[run_worker] bulk flush: {writer.batches_flushed} batch, "
+            f"{writer.rows_flushed} satir"
+        )
+    except Exception as flush_err:
+        stats.errors.append(
+            f"bulk flush_all: {type(flush_err).__name__}: {flush_err}"
+        )
 
     elapsed = time.time() - started
     final_status = "success" if not stats.errors else (
