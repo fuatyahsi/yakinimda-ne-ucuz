@@ -14,7 +14,7 @@ Find the cheapest price for the same product across nearby supermarkets and drug
 
 ## Mimari
 
-\`\`\`
+```
 ┌─────────────────────┐       ┌──────────────────────┐
 │  Flutter app (iOS/  │  ──▶  │  Supabase (primary)  │
 │  Android/Desktop)   │       │  prices, products,   │
@@ -31,7 +31,7 @@ Find the cheapest price for the same product across nearby supermarkets and drug
                               ┌──────────────────────┐
                               │  GitHub Actions      │
                               └──────────────────────┘
-\`\`\`
+```
 
 **Primary source:** Supabase `prices` tablosu, GitHub Actions cron'u ile günde 2 kez doldurulur.
 
@@ -39,7 +39,7 @@ Find the cheapest price for the same product across nearby supermarkets and drug
 
 ## Proje yapısı
 
-\`\`\`
+```
 lib/                            # Flutter uygulaması
 ├── config/
 │   └── supabase_config.dart    # Build-time dart-define ile okunur
@@ -63,7 +63,7 @@ backend/workers/                # Python scraperlar + Supabase writer
 
 tools/akakce_worker/            # Yedek fiyat kaynağı (akakce.com)
 .github/workflows/              # Cron + CI
-\`\`\`
+```
 
 ## Kurulum
 
@@ -76,7 +76,7 @@ tools/akakce_worker/            # Yedek fiyat kaynağı (akakce.com)
 
 Supabase bağlantı bilgilerini `--dart-define` ile ver — **ASLA repo'ya commit etme**:
 
-\`\`\`bash
+```bash
 flutter pub get
 
 flutter run \
@@ -87,13 +87,13 @@ flutter run \
 flutter build apk --release \
   --dart-define=SUPABASE_URL=... \
   --dart-define=SUPABASE_ANON_KEY=...
-\`\`\`
+```
 
 `SUPABASE_ANON_KEY` = `sb_publishable_*` formatındaki public key. Service role key **kesinlikle** client'a konmamalı — RLS sadece anon key ile uygulanır.
 
 ### Backend scraperlar
 
-\`\`\`bash
+```bash
 cd backend/workers
 pip install requests
 
@@ -107,7 +107,7 @@ SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
 
 # Önceki run'ın cache'inden kurtarma
 python run_worker.py --market a101 --from-cache
-\`\`\`
+```
 
 ### Cron + GitHub Actions
 
