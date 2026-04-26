@@ -17,7 +17,9 @@ def _load_parser(module: str, cls_name: str) -> Type[BaseParser]:
 _REGISTRY: dict[str, tuple[str, str]] = {
     "bim":                   ("bim",                   "BimParser"),
     "a101":                  ("a101",                  "A101Parser"),
-    "sok":                   ("sok",                   "SokParser"),
+    # 2026-04-26 cutover: sok artik sokmarket.com.tr direct (RSC).
+    # Yedek (marketfiyati): ("sok_marketfiyati", "SokParser")
+    "sok":                   ("sok_direct",            "SokDirectParser"),
     "migros":                ("migros",                "MigrosParser"),
     "carrefoursa":           ("carrefoursa",           "CarrefourSAParser"),
     "metro":                 ("metro",                 "MetroParser"),

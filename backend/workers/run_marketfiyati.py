@@ -73,13 +73,14 @@ from parsers._marketfiyati import (  # noqa: E402
 
 _CACHE_DIR = _HERE / "cache"
 
-# 6 market marketfiyati kapsami — registry'deki ID'lerle ayni.
+# 5 market marketfiyati kapsami. (sok 2026-04-26'da cutover edildi — artik
+# sokmarket.com.tr direct parser kullaniyor, run_marketfiyati'a dahil degil.
+# Bkz. parsers/sok_direct.py)
 DEFAULT_TARGETS: tuple[str, ...] = (
     "a101",
     "bim",
     "carrefoursa",
     "migros",
-    "sok",
     "tarim-kredi",
 )
 
