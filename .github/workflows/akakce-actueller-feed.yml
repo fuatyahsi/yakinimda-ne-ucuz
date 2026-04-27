@@ -34,8 +34,13 @@ on:
     paths:
       - ".github/workflows/akakce-actueller-feed.yml"
       - "tools/akakce_worker/**"
-  schedule:
-    - cron: "0 5 * * *"
+  # 2026-04-26: cron devre disi. BIM artik marketfiyati'dan canli besleniyor
+  # (parsers/bim.py); akakce broşür OCR pipeline'inin urettigi extracted_products.json
+  # registry'de okunmuyor (bim_akakce.py orphan). Workflow yedek olarak korunuyor;
+  # broşür akisi yeniden gerekirse schedule'i geri ac:
+  #   schedule:
+  #     - cron: "0 5 * * *"
+  # workflow_dispatch ile manuel trigger her zaman mumkun.
 
 jobs:
   build-actueller-feed:
