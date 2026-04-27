@@ -16,8 +16,19 @@ name: Market Fiyati Sweep
 #
 # 2026-04-26 cutover: sok marketfiyati'dan cikarildi (~%0.9 coverage).
 # Bkz. parsers/sok_direct.py ve parsers/sok_marketfiyati.py.
+#
+# Trigger note: bu YAML her degistirildiginde push tetiklenmesi kolayligi
+# icin `push` filter eklendi. Sweep her commit'te degil, sadece bu workflow
+# dosyasi degisirse tetiklenir — workflow degisikliklerini hizli test
+# etmek icin. Trivial bir yorum guncellemesi (rerun marker: 1) bile
+# isabettir.
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/marketfiyati-sweep.yml"
   workflow_dispatch:
     inputs:
       markets:
