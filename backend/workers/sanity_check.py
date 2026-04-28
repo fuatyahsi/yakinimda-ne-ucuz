@@ -33,6 +33,7 @@ DEFAULT_TARGETS: tuple[str, ...] = (
     "migros",
     "sok",
     "tarim-kredi",
+    "hakmar-express",
 )
 
 

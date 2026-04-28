@@ -1,15 +1,21 @@
 name: Market Fiyati Sweep
 
 # 5 market marketfiyati.org.tr (a101, bim, carrefoursa, migros, tarim-kredi)
-# + 1 market sokmarket.com.tr direct (sok). Iki job paralel kosar:
+# + 1 market sokmarket.com.tr direct (sok)
+# + 1 market hakmarexpress.com.tr direct (hakmar-express).
+# Uc job paralel kosar, sanity dorduncusu:
 #
-#   1. marketfiyati : run_marketfiyati.py — 5 market icin tek API sweep,
-#                     fan-out yazim (~5-10 dk).
-#   2. sok-direct   : run_worker.py --market sok --live --mode discover —
-#                     sokmarket.com.tr Next.js RSC parser, kategori BFS
-#                     (~5-15 dk, max_urls'ye gore).
-#   3. sanity       : ikisinin ardindan; son 7 gun avg ile kiyasla
-#                     (>%50 dusus alarm).
+#   1. marketfiyati          : run_marketfiyati.py — 5 market icin tek API
+#                              sweep, fan-out yazim (~5-10 dk).
+#   2. sok-direct            : run_worker.py --market sok --live --mode discover
+#                              sokmarket.com.tr Next.js RSC parser, kategori BFS
+#                              (~5-15 dk, max_urls'ye gore).
+#   3. hakmar-express-direct : run_worker.py --market hakmar-express --live
+#                              --mode category — hakmarexpress.com.tr Angular
+#                              SSR (window.__SSR_DATA__) parser, kategori
+#                              sweep (~10dk, ~4000+ urun).
+#   4. sanity                : ucu bittikten sonra; son 7 gun avg ile kiyas
+#                              (>%50 dusus alarm).
 #
 # Schedule: TR saatine gore 08:00 ve 20:00 (UTC 05:00 + 17:00).
 # concurrency: ayni anda tek sweep — workflow seviyesinde grup.
@@ -58,6 +64,16 @@ on:
         type: string
       skip_sok:
         description: "sok-direct job'ini atla"
+        required: false
+        default: false
+        type: boolean
+      hakmar_express_max_urls:
+        description: "hakmar-express max kategori URL (bos = tamami; 200 oneri)"
+        required: false
+        default: "200"
+        type: string
+      skip_hakmar_express:
+        description: "hakmar-express-direct job'ini atla"
         required: false
         default: false
         type: boolean
@@ -179,11 +195,58 @@ jobs:
           retention-days: 14
 
   # ------------------------------------------------------------------
-  # Sanity check — her iki sweep bittikten sonra
+  # HAKMAR Express direct (hakmarexpress.com.tr Angular SSR) sweep
+  # ------------------------------------------------------------------
+  hakmar-express-direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_hakmar_express != 'true' }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Run hakmar-express-direct sweep
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        shell: bash
+        run: |
+          ARGS=(--market hakmar-express --live --mode category)
+          MAX_URLS="${{ github.event.inputs.hakmar_express_max_urls }}"
+          if [ -z "$MAX_URLS" ]; then
+            # cron default — 200 kategori (~10dk; ~4000+ urun bekleriz):
+            MAX_URLS="200"
+          fi
+          ARGS+=(--max-urls "$MAX_URLS")
+          echo "[workflow] hakmar-express-direct args: ${ARGS[@]}"
+          python -u backend/workers/run_worker.py "${ARGS[@]}"
+
+      - name: Upload hakmar-express cache (recovery payload)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hakmar-express-cache-${{ github.run_id }}
+          path: backend/workers/cache/hakmar-express_*.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ------------------------------------------------------------------
+  # Sanity check — her uc sweep bittikten sonra
   # ------------------------------------------------------------------
   sanity:
     runs-on: ubuntu-latest
-    needs: [marketfiyati, sok-direct]
+    needs: [marketfiyati, sok-direct, hakmar-express-direct]
     # `always()` — bir job fail etse de diger market'in delta'sini
     # gormek icin sanity'i koruyoruz; sadece kullanici acikca skip
     # demediyse.
