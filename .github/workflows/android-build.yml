@@ -52,7 +52,9 @@ jobs:
         run: flutter pub get
 
       - name: Run tests
-        run: flutter test test/widget_test.dart test/smart_kitchen_test.dart test/recipe_catalog_test.dart test/recipe_amount_test.dart
+        # Eski FridgeChef projesinden kalan test isimlerinin yerine bu
+        # repo'daki gercek test dosyalari (lib/services icin yazildi).
+        run: flutter test test/cosmetic_source_service_test.dart test/market_fiyati_source_service_test.dart test/product_category_test.dart test/smart_actueller_feed_service_test.dart test/smart_actueller_source_service_test.dart
 
       - name: Build debug APK
         run: flutter build apk --debug
