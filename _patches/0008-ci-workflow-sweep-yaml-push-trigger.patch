@@ -1,0 +1,46 @@
+From ab22d6ca459e4227349098078d43c3ddcea81270 Mon Sep 17 00:00:00 2001
+From: Fuat Yahsi <yahsifuat@gmail.com>
+Date: Mon, 27 Apr 2026 15:10:37 +0300
+Subject: [PATCH] ci(workflow): sweep YAML degisiminde otomatik tetik
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Sadece bu workflow dosyasi degisirse 'push' tetiklenmesi ekledim
+(paths filter ile). Sweep her commit'te degil, yalnizca workflow
+guncellemelerinde otomatik kosar — debug/iyilestirme dongusunu
+hizlandirir, manuel 'Run workflow' tikina gerek kalmaz.
+
+Trivial bir yorum guncellemesi de bu trigger'i tetikler:
+'Trigger note: ... rerun marker: 1' satiri sayac olarak kullanilabilir.
+---
+ .github/workflows/marketfiyati-sweep.yml | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/.github/workflows/marketfiyati-sweep.yml b/.github/workflows/marketfiyati-sweep.yml
+index 8046f8a..3f4f29e 100644
+--- a/.github/workflows/marketfiyati-sweep.yml
++++ b/.github/workflows/marketfiyati-sweep.yml
+@@ -16,8 +16,19 @@ name: Market Fiyati Sweep
+ #
+ # 2026-04-26 cutover: sok marketfiyati'dan cikarildi (~%0.9 coverage).
+ # Bkz. parsers/sok_direct.py ve parsers/sok_marketfiyati.py.
++#
++# Trigger note: bu YAML her degistirildiginde push tetiklenmesi kolayligi
++# icin `push` filter eklendi. Sweep her commit'te degil, sadece bu workflow
++# dosyasi degisirse tetiklenir — workflow degisikliklerini hizli test
++# etmek icin. Trivial bir yorum guncellemesi (rerun marker: 1) bile
++# isabettir.
+ 
+ on:
++  push:
++    branches:
++      - main
++    paths:
++      - ".github/workflows/marketfiyati-sweep.yml"
+   workflow_dispatch:
+     inputs:
+       markets:
+-- 
+2.34.1
+

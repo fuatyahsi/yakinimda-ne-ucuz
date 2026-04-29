@@ -1,0 +1,820 @@
+From 778b66d2355d1e3de14232a7f7cd907229fc00f8 Mon Sep 17 00:00:00 2001
+From: Fuat Yahsi <yahsifuat@gmail.com>
+Date: Sat, 25 Apr 2026 10:43:54 +0300
+Subject: [PATCH] =?UTF-8?q?perf(workers):=20Step=205b=20=E2=80=94=20bulk?=
+ =?UTF-8?q?=20product/alias=20resolution?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+find_or_create_product item basi 1-4 RTT yapiyordu (alias SELECT,
+products SELECT, INSERT, alias UPSERT). 5528 item'lik sweep'te bu
+~55dk ediyor. BulkProductResolver bu adimlarin her birini per-batch
+(50 item) tek POST/GET'e indirir:
+
+  1. SELECT product_aliases WHERE alias=in.(...) AND source=eq.X
+  2. SELECT products       WHERE canonical_name=in.(...)   (eksikler)
+  3. INSERT products       (canonical_name'i hala olmayan kalan)
+  4. UPSERT product_aliases (eksik alias'lari product_id'ye bagla)
+
+Beklenti: 5528 / 50 = ~110 batch x 4 RTT = ~440 RTT (~3dk).
+Bu Step 5a (BulkWriter — prices/campaigns) ile birlestiginde sweep
+suresi 86dk -> ~12-30dk hedefine yaklasir.
+
+Hata durumunda graceful fallback: bulk operasyonlar herhangi bir
+noktada exception firlatirsa, batch'in items'lari tek tek
+find_or_create_product ile cozulur. Item kacirilmaz.
+
+Entegrasyon:
+- core.py: BulkProductResolver + _build_in_filter / _postgrest_in_value
+  yardimcilari. find_or_create_product korundu (fallback path'i icin).
+- run_worker.py: items 50'lik chunk'larda dolaniyor, her chunk icin
+  resolver.resolve_batch + insert_price/campaign loop.
+- run_marketfiyati.py: per-market 'pending' buffer; 50 dolunca veya
+  sweep sonu _flush_pending tetiklenir.
+- _test_bulk_resolver.py: mock client ile 5 vaka (bos, all-new,
+  all-existing-alias, mixed, dup-canonical-in-batch) — hepsi gecti.
+---
+ backend/workers/_test_bulk_resolver.py | 265 +++++++++++++++++++++++++
+ backend/workers/core.py                | 224 +++++++++++++++++++++
+ backend/workers/run_marketfiyati.py    | 115 ++++++++---
+ backend/workers/run_worker.py          |  56 ++++--
+ 4 files changed, 614 insertions(+), 46 deletions(-)
+ create mode 100644 backend/workers/_test_bulk_resolver.py
+
+diff --git a/backend/workers/_test_bulk_resolver.py b/backend/workers/_test_bulk_resolver.py
+new file mode 100644
+index 0000000..81a86df
+--- /dev/null
++++ b/backend/workers/_test_bulk_resolver.py
+@@ -0,0 +1,265 @@
++"""Quick unit test for BulkProductResolver — mock client, no Supabase.
++
++python backend/workers/_test_bulk_resolver.py
++"""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++_HERE = Path(__file__).resolve().parent
++if str(_HERE) not in sys.path:
++    sys.path.insert(0, str(_HERE))
++
++from core import (  # noqa: E402
++    BulkProductResolver,
++    RunStats,
++    WorkerItem,
++)
++
++
++class MockClient:
++    """In-memory product_aliases + products tabanli sahte SupabaseClient."""
++
++    def __init__(self) -> None:
++        # tablename → list of dicts
++        self.aliases: list[dict] = []
++        self.products: list[dict] = []
++        self._next_pid = 0
++        self.calls: list[tuple[str, str, dict]] = []  # method, table, params
++
++    # Helpers --------------------------------------------------------
++    def _new_pid(self) -> str:
++        self._next_pid += 1
++        return f"pid-{self._next_pid:04d}"
++
++    @staticmethod
++    def _parse_in(filter_value: str) -> list[str]:
++        # 'in.("a","b","c, d")' → ['a','b','c, d']
++        body = filter_value[len("in.("):-1]
++        out: list[str] = []
++        i = 0
++        while i < len(body):
++            assert body[i] == '"', f"expected quote at {i}: {body!r}"
++            i += 1
++            buf: list[str] = []
++            while i < len(body):
++                if body[i] == "\\":
++                    buf.append(body[i + 1])
++                    i += 2
++                elif body[i] == '"':
++                    i += 1
++                    break
++                else:
++                    buf.append(body[i])
++                    i += 1
++            out.append("".join(buf))
++            if i < len(body) and body[i] == ",":
++                i += 1
++        return out
++
++    @staticmethod
++    def _eq(filter_value: str) -> str:
++        assert filter_value.startswith("eq."), filter_value
++        return filter_value[len("eq."):]
++
++    # API ------------------------------------------------------------
++    def select(self, table: str, params: dict) -> list[dict]:
++        self.calls.append(("select", table, dict(params)))
++        if table == "product_aliases":
++            wanted = set(self._parse_in(params["alias"]))
++            source = self._eq(params["source"])
++            return [
++                {"alias": r["alias"], "product_id": r["product_id"]}
++                for r in self.aliases
++                if r["alias"] in wanted and r["source"] == source
++            ]
++        if table == "products":
++            wanted = set(self._parse_in(params["canonical_name"]))
++            return [
++                {"id": r["id"], "canonical_name": r["canonical_name"]}
++                for r in self.products
++                if r["canonical_name"] in wanted
++            ]
++        raise AssertionError(f"unexpected select on table={table}")
++
++    def insert(self, table: str, rows: list[dict]) -> list[dict]:
++        self.calls.append(("insert", table, {"count": len(rows)}))
++        if table == "products":
++            out = []
++            for r in rows:
++                pid = self._new_pid()
++                row = {**r, "id": pid}
++                self.products.append(row)
++                out.append(row)
++            return out
++        raise AssertionError(f"unexpected insert on table={table}")
++
++    def upsert(
++        self, table: str, rows: list[dict], on_conflict: str
++    ) -> list[dict]:
++        self.calls.append(
++            ("upsert", table, {"count": len(rows), "on_conflict": on_conflict})
++        )
++        if table == "product_aliases":
++            existing_keys = {(r["alias"], r["source"]) for r in self.aliases}
++            for r in rows:
++                key = (r["alias"], r["source"])
++                if key in existing_keys:
++                    continue
++                self.aliases.append(dict(r))
++                existing_keys.add(key)
++            return rows
++        raise AssertionError(f"unexpected upsert on table={table}")
++
++
++def make_item(name: str, brand: str | None = None) -> WorkerItem:
++    return WorkerItem(
++        market_id="test",
++        product_name=name,
++        brand=brand,
++        discount_price=10.0,
++        regular_price=12.0,
++    )
++
++
++def test_all_new() -> None:
++    """All items new — no existing aliases or products."""
++    client = MockClient()
++    stats = RunStats()
++    resolver = BulkProductResolver(client, "marketfiyati", stats)
++
++    items = [
++        make_item("Sutas Tam Yagli Sut 1L", "Sutas"),
++        make_item("Pinar Beyaz Peynir 200g", "Pinar"),
++    ]
++    mapping = resolver.resolve_batch(items)
++
++    assert mapping[0] is not None
++    assert mapping[1] is not None
++    assert mapping[0] != mapping[1]
++    assert stats.products_added == 2
++    assert stats.products_matched == 0
++    # 1 SELECT alias + 1 SELECT products + 1 INSERT products + 1 UPSERT alias
++    methods = [c[0] for c in client.calls]
++    assert methods == ["select", "select", "insert", "upsert"], methods
++    print("test_all_new OK")
++
++
++def test_all_existing_alias() -> None:
++    """All items have an existing alias — should be 1 SELECT only."""
++    client = MockClient()
++    # Pre-seed aliases
++    client.products.append({"id": "p1", "canonical_name": "X"})
++    client.aliases.append(
++        {"alias": "sutas-sut-1l", "source": "marketfiyati", "product_id": "p1"}
++    )
++    client.aliases.append(
++        {"alias": "pinar-peynir-200g", "source": "marketfiyati", "product_id": "p1"}
++    )
++
++    stats = RunStats()
++    resolver = BulkProductResolver(client, "marketfiyati", stats)
++
++    items = [
++        make_item("Sutas Sut 1L"),
++        make_item("Pinar Peynir 200g"),
++    ]
++    # canonical_key()'in deterministik oldugunu kontrol et
++    print(
++        f"  canonical_keys: {[i.canonical_key() for i in items]}"
++    )
++    # Alias'lari item'larin canonical_key'ine gore ayarla
++    client.aliases.clear()
++    for item in items:
++        client.aliases.append(
++            {
++                "alias": item.canonical_key(),
++                "source": "marketfiyati",
++                "product_id": "p1",
++            }
++        )
++
++    mapping = resolver.resolve_batch(items)
++    assert mapping[0] == "p1", mapping
++    assert mapping[1] == "p1", mapping
++    assert stats.products_added == 0
++    assert stats.products_matched == 2
++    methods = [c[0] for c in client.calls]
++    # Sadece alias SELECT
++    assert methods == ["select"], methods
++    print("test_all_existing_alias OK")
++
++
++def test_mixed() -> None:
++    """1 alias hit, 1 canonical_name hit, 1 totally new."""
++    client = MockClient()
++    stats = RunStats()
++    resolver = BulkProductResolver(client, "marketfiyati", stats)
++
++    items = [
++        make_item("AAA Item One"),       # alias zaten var
++        make_item("BBB Item Two"),       # alias yok ama canonical var
++        make_item("CCC Item Three"),     # tamamen yeni
++    ]
++    # alias hit
++    client.aliases.append(
++        {
++            "alias": items[0].canonical_key(),
++            "source": "marketfiyati",
++            "product_id": "p-existing-1",
++        }
++    )
++    # canonical_name hit
++    client.products.append({"id": "p-existing-2", "canonical_name": "BBB Item Two"})
++
++    mapping = resolver.resolve_batch(items)
++    assert mapping[0] == "p-existing-1", mapping
++    assert mapping[1] == "p-existing-2", mapping
++    assert mapping[2] is not None and mapping[2].startswith("pid-")
++    assert stats.products_added == 1  # only CCC
++    assert stats.products_matched == 1  # only AAA (BBB came via name path)
++    print("test_mixed OK")
++
++
++def test_dup_canonical_in_batch() -> None:
++    """Ayni canonical_name farkli alias'lar (ayni product) — tek INSERT."""
++    client = MockClient()
++    stats = RunStats()
++    resolver = BulkProductResolver(client, "marketfiyati", stats)
++
++    # Ayni product_name, farkli brand → ayni canonical_name ama farkli alias
++    items = [
++        make_item("Sut 1 Litre", "Sutas"),
++        make_item("Sut 1 Litre", "Pinar"),
++    ]
++    assert items[0].canonical_key() != items[1].canonical_key(), \
++        "Brand alias'a giriyor — bu test bunu test ediyor"
++
++    mapping = resolver.resolve_batch(items)
++    assert mapping[0] == mapping[1], (mapping, "ayni product paylasilmali")
++    assert stats.products_added == 1, stats
++    # Iki alias UPSERT edilmeli
++    upserts = [c for c in client.calls if c[0] == "upsert"]
++    assert len(upserts) == 1
++    assert upserts[0][2]["count"] == 2
++    print("test_dup_canonical_in_batch OK")
++
++
++def test_empty() -> None:
++    client = MockClient()
++    stats = RunStats()
++    resolver = BulkProductResolver(client, "marketfiyati", stats)
++    assert resolver.resolve_batch([]) == {}
++    assert client.calls == []
++    print("test_empty OK")
++
++
++if __name__ == "__main__":
++    test_empty()
++    test_all_new()
++    test_all_existing_alias()
++    test_mixed()
++    test_dup_canonical_in_batch()
++    print("\nAll resolver tests passed.")
+diff --git a/backend/workers/core.py b/backend/workers/core.py
+index 88925e1..6ae1bae 100644
+--- a/backend/workers/core.py
++++ b/backend/workers/core.py
+@@ -420,6 +420,230 @@ def find_or_create_product(
+     return product_id
+ 
+ 
++# ---------------------------------------------------------------------
++# Bulk product/alias resolver (Step 5b)
++# ---------------------------------------------------------------------
++# Performans notu — find_or_create_product item basi 1-4 RTT yapiyordu
++# (alias SELECT, products SELECT, INSERT, alias UPSERT). 5528 item × ~1.5
++# RTT × 400ms ≈ 55dk. BulkProductResolver bu adimlarin her birini "batch
++# halinde" calistirarak per-batch (50 item) 4 RTT'e indirir:
++#
++#   1. SELECT product_aliases WHERE alias=in.(...) AND source=eq.X
++#   2. SELECT products       WHERE canonical_name=in.(...)   (sadece eksikler)
++#   3. INSERT products       (canonical_name'i hala olmayan kalan)
++#   4. UPSERT product_aliases (eksik alias'lari product_id'ye bagla)
++#
++# Beklenti: 5528 item / 50 = ~110 batch × 4 RTT = ~440 RTT (~3dk).
++#
++# Hata durumu — graceful fallback: batch operasyonlari herhangi bir
++# noktada exception firlattigi durumda, resolver o batch'in items'larini
++# tek tek find_or_create_product ile dener. Item kacirilmaz, sadece
++# yavaslar.
++def _postgrest_in_value(value: str) -> str:
++    """PostgREST 'in.(...)' filter'i icin tek bir degeri quote+escape eder."""
++    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
++    return f'"{escaped}"'
++
++
++def _build_in_filter(values: list[str]) -> str:
++    """PostgREST in.(...) sag tarafini olustur. Caller value setini dedupe etmis olmali."""
++    return f"in.({','.join(_postgrest_in_value(v) for v in values)})"
++
++
++class BulkProductResolver:
++    """Batch halinde alias→product_id resolve eder.
++
++    Bir market icin tek instance. `alias_source` parser'in alias_source'u
++    olmali (ornek: 'marketfiyati', 'a101', 'bim').
++
++    Kullanim:
++        resolver = BulkProductResolver(client, parser.alias_source, stats)
++        for chunk in chunks_of_size(items, 50):
++            mapping = resolver.resolve_batch(chunk)
++            for idx, item in enumerate(chunk):
++                pid = mapping.get(idx)
++                insert_price(writer, pid, item, run_id, ..., stats)
++                insert_campaign(writer, pid, item, stats)
++    """
++
++    def __init__(
++        self,
++        client: SupabaseClient,
++        alias_source: str,
++        stats: RunStats,
++    ) -> None:
++        self._client = client
++        self._alias_source = alias_source
++        self._stats = stats
++        self.batches_resolved: int = 0
++        self.fallback_items: int = 0
++
++    def resolve_batch(self, items: list[WorkerItem]) -> dict[int, str | None]:
++        """Batch'in her item'i icin index → product_id mapping'i dondur.
++
++        None → resolve fail (item insert_price'a None product_id ile gidebilir;
++        prices.product_id NULL allowed, campaigns degil — caller filtrelemeli).
++        """
++        if not items:
++            return {}
++        try:
++            return self._resolve_batch_fast(items)
++        except Exception as err:
++            # Bulk path patladi — tek tek fallback. find_or_create_product
++            # zaten try/except ile sarili degil, caller'in halletmesi lazim.
++            self._stats.errors.append(
++                f"bulk resolve fell back: {type(err).__name__}: {err}"
++            )
++            return self._resolve_batch_fallback(items)
++
++    # ----- iç akış -----------------------------------------------------
++    def _resolve_batch_fast(
++        self, items: list[WorkerItem]
++    ) -> dict[int, str | None]:
++        # 1) Her item icin alias topla.
++        aliases_by_idx: dict[int, str] = {
++            idx: item.canonical_key() for idx, item in enumerate(items)
++        }
++        unique_aliases = sorted({a for a in aliases_by_idx.values() if a})
++        alias_to_pid: dict[str, str] = {}
++
++        if unique_aliases:
++            rows = self._client.select(
++                "product_aliases",
++                {
++                    "alias": _build_in_filter(unique_aliases),
++                    "source": f"eq.{self._alias_source}",
++                    "select": "alias,product_id",
++                },
++            )
++            for r in rows:
++                alias_to_pid[r["alias"]] = r["product_id"]
++
++        # 2) Eksik alias'lari bul, bunlarin canonical_name set'ini cikar.
++        missing_idxs = [
++            idx
++            for idx, a in aliases_by_idx.items()
++            if a and a not in alias_to_pid
++        ]
++        names_by_idx: dict[int, str] = {
++            idx: items[idx].product_name for idx in missing_idxs
++        }
++        unique_names = sorted({n for n in names_by_idx.values() if n})
++        name_to_pid: dict[str, str] = {}
++
++        if unique_names:
++            rows = self._client.select(
++                "products",
++                {
++                    "canonical_name": _build_in_filter(unique_names),
++                    "select": "id,canonical_name",
++                },
++            )
++            for r in rows:
++                name_to_pid[r["canonical_name"]] = r["id"]
++
++        # 3) Hala yoklari INSERT et. Ayni canonical_name farkli item'larda
++        #    tekrar etmis olabilir — ilk geleni al (deterministik for stable
++        #    brand/image_url choice).
++        names_to_create = [n for n in unique_names if n not in name_to_pid]
++        if names_to_create:
++            first_item_for_name: dict[str, WorkerItem] = {}
++            for idx in missing_idxs:
++                n = names_by_idx[idx]
++                if n in names_to_create and n not in first_item_for_name:
++                    first_item_for_name[n] = items[idx]
++
++            payloads = []
++            for name in names_to_create:
++                it = first_item_for_name[name]
++                size, unit = extract_package(name)
++                payloads.append(
++                    {
++                        "canonical_name": name,
++                        "brand": it.brand,
++                        "package_size": size,
++                        "package_unit": unit,
++                        "search_text": normalize_search_text(name),
++                        "image_url": it.image_url,
++                    }
++                )
++            created = self._client.insert("products", payloads)
++            for row in created:
++                name_to_pid[row["canonical_name"]] = row["id"]
++            self._stats.products_added += len(created)
++
++        # 4) Eksik (alias,source) ciftlerini product_id'ye bagla, bulk UPSERT.
++        new_alias_rows: list[dict] = []
++        seen_alias: set[tuple[str, str]] = set()
++        for idx in missing_idxs:
++            a = aliases_by_idx[idx]
++            n = names_by_idx[idx]
++            pid = name_to_pid.get(n)
++            if pid is None:
++                continue
++            alias_to_pid[a] = pid
++            key = (a, self._alias_source)
++            if key in seen_alias:
++                continue
++            seen_alias.add(key)
++            new_alias_rows.append(
++                {
++                    "product_id": pid,
++                    "alias": a,
++                    "source": self._alias_source,
++                    "confidence": items[idx].confidence,
++                }
++            )
++
++        if new_alias_rows:
++            try:
++                self._client.upsert(
++                    "product_aliases",
++                    new_alias_rows,
++                    on_conflict="alias,source",
++                )
++            except requests.HTTPError as err:
++                # Alias UPSERT patlasa bile alias_to_pid mapping zaten elimizde —
++                # mevcut item'lar product_id'lerini alabilir; sadece alias kaydi
++                # eksik (gelecek run aynisini cozer).
++                self._stats.errors.append(f"bulk alias upsert: {err}")
++
++        # 5) products_matched: alias path'i ile match olan item sayisi
++        #    (zaten alias_to_pid'de olanlar — yani missing_idxs'te olmayanlar).
++        matched_via_alias = len(items) - len(missing_idxs)
++        self._stats.products_matched += matched_via_alias
++
++        # 6) Result mapping
++        self.batches_resolved += 1
++        return {
++            idx: alias_to_pid.get(a) for idx, a in aliases_by_idx.items()
++        }
++
++    def _resolve_batch_fallback(
++        self, items: list[WorkerItem]
++    ) -> dict[int, str | None]:
++        """Batch operasyonu patladiginda tek tek find_or_create_product kullan."""
++        result: dict[int, str | None] = {}
++        for idx, item in enumerate(items):
++            try:
++                result[idx] = find_or_create_product(
++                    self._client, item, self._alias_source, self._stats
++                )
++            except requests.HTTPError as err:
++                self._stats.errors.append(
++                    f"fallback resolve item {idx}: {err}"
++                )
++                result[idx] = None
++            except Exception as err:  # pragma: no cover
++                self._stats.errors.append(
++                    f"fallback resolve item {idx}: "
++                    f"{type(err).__name__}: {err}"
++                )
++                result[idx] = None
++            self.fallback_items += 1
++        return result
++
++
+ def insert_price(
+     inserter: "SupabaseClient | BulkWriter",
+     product_id: str | None,
+diff --git a/backend/workers/run_marketfiyati.py b/backend/workers/run_marketfiyati.py
+index 0d1e783..5396dda 100644
+--- a/backend/workers/run_marketfiyati.py
++++ b/backend/workers/run_marketfiyati.py
+@@ -54,11 +54,11 @@ if str(_HERE) not in sys.path:
+ import requests  # noqa: E402
+ 
+ from core import (  # noqa: E402
++    BulkProductResolver,
+     BulkWriter,
+     RunStats,
+     SupabaseClient,
+     WorkerItem,
+-    find_or_create_product,
+     finish_scrape_run,
+     insert_campaign,
+     insert_price,
+@@ -83,6 +83,12 @@ DEFAULT_TARGETS: tuple[str, ...] = (
+     "tarim-kredi",
+ )
+ 
++# Step 5b: per-market kac item biriktirip toplu resolve+yazim yapacak.
++# 50: PostgREST `in.()` URL'i ~6KB civari (alias slug ~80ch + canonical_name
++# ~100ch x 50). 4-8KB nginx default'una guvenli mesafe. Dusuk olursa per-batch
++# overhead artiyor, yuksek olursa URL too long riski.
++RESOLVE_BATCH_SIZE = 50
++
+ 
+ def build_arg_parser() -> argparse.ArgumentParser:
+     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+@@ -175,7 +181,9 @@ def run(args: argparse.Namespace) -> int:
+         state: dict = {
+             "parser": parser,
+             "market_adi": market_adi,
+-            "items": [],          # cache icin
++            "items": [],          # cache icin (sweep boyunca tum item'lar)
++            "pending": [],        # Step 5b: resolver'a verilecek bekleyenler
++            "resolver": None,     # Supabase yazimi varsa init edilir
+             "stats": RunStats(),
+             "run_id": None,
+         }
+@@ -186,6 +194,9 @@ def run(args: argparse.Namespace) -> int:
+                 source_type=parser.source_type,
+                 source_label=parser.source_label,
+             )
++            state["resolver"] = BulkProductResolver(
++                supabase, parser.alias_source, state["stats"]
++            )
+             print(f"[mf] {market_id}: scrape_run #{state['run_id']} acildi")
+         per_market[market_id] = state
+ 
+@@ -230,30 +241,12 @@ def run(args: argparse.Namespace) -> int:
+                     state["items"].append(item)
+ 
+                     if supabase is not None:
+-                        try:
+-                            # find_or_create_product hala raw client —
+-                            # product_id'yi anlik okumak gerekiyor.
+-                            product_id = find_or_create_product(
+-                                supabase, item, parser.alias_source, state["stats"]
+-                            )
+-                            # insert_price / insert_campaign BulkWriter'a
+-                            # buffered yazar; flush_all() finalize'da.
+-                            insert_price(
+-                                writer, product_id, item, state["run_id"],
+-                                parser.source_label, state["stats"],
+-                            )
+-                            insert_campaign(
+-                                writer, product_id, item, state["stats"]
+-                            )
+-                            total_writes += 1
+-                        except requests.HTTPError as err:
+-                            state["stats"].errors.append(
+-                                f"kw={kw!r} pid={pid}: HTTP {err}"
+-                            )
+-                        except Exception as err:  # pragma: no cover
+-                            state["stats"].errors.append(
+-                                f"kw={kw!r} pid={pid}: "
+-                                f"{type(err).__name__}: {err}"
++                        # Step 5b: anlik find_or_create_product yerine
++                        # pending buffer'a koy. Buffer dolunca toplu resolve+yaz.
++                        state["pending"].append(item)
++                        if len(state["pending"]) >= RESOLVE_BATCH_SIZE:
++                            total_writes += _flush_pending(
++                                state, writer, kw_label=kw
+                             )
+         except Exception as err:
+             print(f"[mf] keyword {kw!r} FAILED: {err}")
+@@ -276,6 +269,17 @@ def run(args: argparse.Namespace) -> int:
+     # Finalize
+     # --------------------------------------------------------------
+     if supabase is not None:
++        # Once her marketin pending buffer'ini son kez bosalt — bunlar henuz
++        # resolve edilmemis item'lar. Sonra BulkWriter'i flush et.
++        for market_id, state in per_market.items():
++            if state["pending"]:
++                wrote = _flush_pending(state, writer, kw_label="<final>")
++                total_writes += wrote
++                print(
++                    f"[mf] {market_id}: final pending flush, "
++                    f"{wrote} item resolved+yazildi"
++                )
++
+         # ONCE bekleyen tum bulk insert'leri yaz — finish_scrape_run sayaci
+         # bu flush'tan sonraki gercek sayilarla esitlenecek. Ayni anda hata
+         # cikarsa tum marketlerin scrape_run'ina partial/failed yansir.
+@@ -325,6 +329,65 @@ def run(args: argparse.Namespace) -> int:
+     return 0
+ 
+ 
++def _flush_pending(
++    state: dict,
++    writer: BulkWriter | None,
++    *,
++    kw_label: str,
++) -> int:
++    """state['pending']'i resolver ile coz, prices+campaigns yaz, buffer'i bosalt.
++
++    Donen deger: yazilan item sayisi (insert_price tetiklenen).
++    """
++    pending: list[WorkerItem] = state["pending"]
++    if not pending or writer is None:
++        return 0
++
++    resolver: BulkProductResolver | None = state["resolver"]
++    parser = state["parser"]
++    stats: RunStats = state["stats"]
++    run_id = state["run_id"]
++
++    if resolver is None:
++        # supabase=None senaryosu — buraya gelmemeli ama defansif.
++        state["pending"] = []
++        return 0
++
++    try:
++        mapping = resolver.resolve_batch(pending)
++    except Exception as err:  # pragma: no cover
++        # resolve_batch zaten kendi icinde fallback ediyor; buraya genelde
++        # ulasilmaz. Yine de defansif: tum batch'i kayip say, devam et.
++        stats.errors.append(
++            f"resolve_batch unexpected ({kw_label}): "
++            f"{type(err).__name__}: {err}"
++        )
++        state["pending"] = []
++        return 0
++
++    written = 0
++    for idx, item in enumerate(pending):
++        product_id = mapping.get(idx)
++        try:
++            insert_price(
++                writer, product_id, item, run_id,
++                parser.source_label, stats,
++            )
++            insert_campaign(writer, product_id, item, stats)
++            written += 1
++        except requests.HTTPError as err:
++            stats.errors.append(
++                f"insert ({kw_label}) idx={idx}: HTTP {err}"
++            )
++        except Exception as err:  # pragma: no cover
++            stats.errors.append(
++                f"insert ({kw_label}) idx={idx}: "
++                f"{type(err).__name__}: {err}"
++            )
++    state["pending"] = []
++    return written
++
++
+ def _cache_path(market_id: str) -> Path:
+     # run_worker.py --from-cache defaultu `{market}_default.json` okur.
+     return _CACHE_DIR / f"{market_id}_default.json"
+diff --git a/backend/workers/run_worker.py b/backend/workers/run_worker.py
+index 4bb4107..2ce4104 100644
+--- a/backend/workers/run_worker.py
++++ b/backend/workers/run_worker.py
+@@ -39,11 +39,11 @@ if str(_HERE) not in sys.path:
+ import requests  # noqa: E402
+ 
+ from core import (  # noqa: E402
++    BulkProductResolver,
+     BulkWriter,
+     SupabaseClient,
+     RunStats,
+     WorkerItem,
+-    find_or_create_product,
+     finish_scrape_run,
+     insert_campaign,
+     insert_price,
+@@ -51,6 +51,10 @@ from core import (  # noqa: E402
+ )
+ from parsers import get_parser, list_markets  # noqa: E402
+ 
++# Step 5b: tek seferde resolver'a verilecek item sayisi. Bkz.
++# run_marketfiyati.py'deki ayni sabit — PostgREST in.() URL guvenligi icin.
++RESOLVE_BATCH_SIZE = 50
++
+ 
+ # ---------------------------------------------------------------------
+ # On-disk scrape cache
+@@ -250,8 +254,11 @@ def run(args: argparse.Namespace) -> int:
+ 
+     # Supabase'e yaz
+     client = SupabaseClient.from_env()
+-    # prices + campaigns icin buffered bulk writer (500'lu chunk).
+-    # find_or_create_product hala raw client'ta — product_id senkron lazim.
++    # Step 5a: prices+campaigns icin buffered bulk writer (500'lu chunk).
++    # Step 5b: product/alias cozumu de bulk — items 50'lik chunk'lara
++    # bolunur, her chunk icin 4 RTT (alias SELECT, products SELECT,
++    # products INSERT, alias UPSERT). Onceki "her item 1-4 RTT"
++    # davranisinin yerine gecer.
+     writer = BulkWriter(client, flush_size=500)
+     run_id = start_scrape_run(
+         client,
+@@ -260,26 +267,35 @@ def run(args: argparse.Namespace) -> int:
+         source_label=parser.source_label,
+     )
+     stats = RunStats()
++    resolver = BulkProductResolver(client, parser.alias_source, stats)
+ 
+     started = time.time()
+-    for index, item in enumerate(items, start=1):
+-        try:
+-            product_id = find_or_create_product(
+-                client, item, parser.alias_source, stats
+-            )
+-            insert_price(writer, product_id, item, run_id,
+-                         parser.source_label, stats)
+-            insert_campaign(writer, product_id, item, stats)
+-        except requests.HTTPError as error:
+-            stats.errors.append(f"item {index}: HTTP {error}")
+-        except Exception as error:  # pragma: no cover
+-            stats.errors.append(
+-                f"item {index}: {type(error).__name__}: {error}"
+-            )
+-        if index % 25 == 0:
++    for batch_start in range(0, len(items), RESOLVE_BATCH_SIZE):
++        chunk = items[batch_start: batch_start + RESOLVE_BATCH_SIZE]
++        mapping = resolver.resolve_batch(chunk)
++        for offset, item in enumerate(chunk):
++            global_idx = batch_start + offset + 1
++            try:
++                product_id = mapping.get(offset)
++                insert_price(writer, product_id, item, run_id,
++                             parser.source_label, stats)
++                insert_campaign(writer, product_id, item, stats)
++            except requests.HTTPError as error:
++                stats.errors.append(f"item {global_idx}: HTTP {error}")
++            except Exception as error:  # pragma: no cover
++                stats.errors.append(
++                    f"item {global_idx}: {type(error).__name__}: {error}"
++                )
++        # Progress: 5 batch'te bir (250 item) ya da son batch'te.
++        end = min(batch_start + RESOLVE_BATCH_SIZE, len(items))
++        if (
++            end == len(items)
++            or (end // RESOLVE_BATCH_SIZE) % 5 == 0
++        ):
+             print(
+-                f"  .. {index}/{len(items)} — "
+-                f"match={stats.products_matched}  new={stats.products_added}"
++                f"  .. {end}/{len(items)} — "
++                f"match={stats.products_matched}  new={stats.products_added}  "
++                f"resolver_batches={resolver.batches_resolved}"
+             )
+ 
+     # Bekleyen prices/campaigns satirlarini bosalt — finish_scrape_run'dan ONCE.
+-- 
+2.34.1
+

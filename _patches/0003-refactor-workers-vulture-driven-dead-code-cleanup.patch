@@ -1,0 +1,119 @@
+From bad73658c35f89dc045085af6c988ab326004a28 Mon Sep 17 00:00:00 2001
+From: Fuat Yahsi <yahsifuat@gmail.com>
+Date: Sat, 25 Apr 2026 10:33:04 +0300
+Subject: [PATCH] =?UTF-8?q?refactor:=20workers=20=E2=80=94=20vulture-drive?=
+ =?UTF-8?q?n=20dead=20code=20cleanup?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+SelectedPrice dataclass'inda hicbir code path'in okumadigi 6 alani
+kaldir (depot_id, depot_name, unit_price, longitude, latitude,
+index_time). Tum bu bilgi zaten 'raw' icinde duruyor — tasiyici hala
+veriyi tasiyor, sadece typed surface'i kullanilan 3 alanla sinirli
+(price, percentage, raw).
+
+Yan temizlikler:
+- run_marketfiyati: total_products_seen sayaci hic raporlanmadan
+  artiriliyordu; kaldir.
+- _marketfiyati.iter_all_products: 'before = len(seen_ids)' atamasi
+  asla okunmuyordu; kaldir.
+
+Why: backend/workers/ icinde vulture taramasi sirasinda real findings
+olarak isaretlendiler (parser registry'sindeki dynamic-import sinif
+referanslari false positive olarak ayiklandi). Daha az alan, daha az
+maintenance yuzeyi.
+---
+ backend/workers/parsers/_marketfiyati.py      | 19 +++++--------------
+ backend/workers/parsers/_marketfiyati_base.py |  6 +-----
+ backend/workers/run_marketfiyati.py           |  2 --
+ 3 files changed, 6 insertions(+), 21 deletions(-)
+
+diff --git a/backend/workers/parsers/_marketfiyati.py b/backend/workers/parsers/_marketfiyati.py
+index 2790b12..4f27711 100644
+--- a/backend/workers/parsers/_marketfiyati.py
++++ b/backend/workers/parsers/_marketfiyati.py
+@@ -102,15 +102,13 @@ class Category:
+ 
+ @dataclass
+ class SelectedPrice:
+-    """Bir urun icin tek bir depot'tan secilmis fiyat (genelde min)."""
+-    depot_id: str
+-    depot_name: str
++    """Bir urun icin tek bir depot'tan secilmis fiyat (genelde min).
++
++    Yalnizca code path'te ihtiyac olan 3 alani tutar; geri kalan ham depot
++    payload'i `raw` icinde kalir (debug + future-proof).
++    """
+     price: float
+-    unit_price: str | None
+     percentage: float
+-    longitude: float | None
+-    latitude: float | None
+-    index_time: str | None
+     raw: dict
+ 
+ 
+@@ -317,7 +315,6 @@ class MarketFiyatiClient:
+ 
+         seen_ids: set[str] = set()
+         for idx, kw in enumerate(kws, start=1):
+-            before = len(seen_ids)
+             kw_yielded = 0
+             try:
+                 for product in self.iter_products_for_keyword(
+@@ -383,14 +380,8 @@ def select_price_for_market(
+         pct = 0.0
+ 
+     return SelectedPrice(
+-        depot_id=str(chosen.get("depotId") or ""),
+-        depot_name=str(chosen.get("depotName") or ""),
+         price=price,
+-        unit_price=chosen.get("unitPrice"),
+         percentage=pct,
+-        longitude=chosen.get("longitude"),
+-        latitude=chosen.get("latitude"),
+-        index_time=chosen.get("indexTime"),
+         raw=chosen,
+     )
+ 
+diff --git a/backend/workers/parsers/_marketfiyati_base.py b/backend/workers/parsers/_marketfiyati_base.py
+index b0f3580..f1d7b87 100644
+--- a/backend/workers/parsers/_marketfiyati_base.py
++++ b/backend/workers/parsers/_marketfiyati_base.py
+@@ -163,11 +163,7 @@ class MarketFiyatiParserBase(BaseParser):
+             if selected is None:
+                 # fallback: raw fiyat ile
+                 from ._marketfiyati import SelectedPrice
+-                selected = SelectedPrice(
+-                    depot_id="", depot_name="", price=0.0,
+-                    unit_price=None, percentage=0.0,
+-                    longitude=None, latitude=None, index_time=None, raw={},
+-                )
++                selected = SelectedPrice(price=0.0, percentage=0.0, raw={})
+             item = self._product_to_item(row, selected)
+             if item is not None:
+                 return item
+diff --git a/backend/workers/run_marketfiyati.py b/backend/workers/run_marketfiyati.py
+index 44953ce..0d1e783 100644
+--- a/backend/workers/run_marketfiyati.py
++++ b/backend/workers/run_marketfiyati.py
+@@ -193,7 +193,6 @@ def run(args: argparse.Namespace) -> int:
+     # Sweep
+     # --------------------------------------------------------------
+     started = time.time()
+-    total_products_seen = 0
+     total_writes = 0
+ 
+     for kw_idx, kw in enumerate(keywords, start=1):
+@@ -229,7 +228,6 @@ def run(args: argparse.Namespace) -> int:
+                         seen.add(pid)
+ 
+                     state["items"].append(item)
+-                    total_products_seen += 1
+ 
+                     if supabase is not None:
+                         try:
+-- 
+2.34.1
+

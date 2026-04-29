@@ -1,0 +1,308 @@
+From 906bd2b5fa09bc2dbbbf11c5da192f31fc2ddd3d Mon Sep 17 00:00:00 2001
+From: Fuat Yahsi <yahsifuat@gmail.com>
+Date: Sat, 25 Apr 2026 10:21:21 +0300
+Subject: [PATCH 2/2] perf(workers): bulk insert writer ile prices/campaigns
+ yazimi 500'lu chunk
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Sorun: 2026-04-24 live run'da 5528 fiyat satiri tek tek POST edildigi
+icin sweep ~86dk surdu. RTT ~400ms x ~16k call (prices + campaigns +
+product_alias + product). Cogu zaman Supabase REST'e tek satir gonderiyorduk.
+
+Cozum: PostgREST tek POST govdesinde array kabul ediyor. core.py'a
+BulkWriter eklendi — SupabaseClient.insert(...) icin drop-in buffered
+wrapper. flush_size=500'le birikim, 500'e ulastiginda eager flush, run
+sonunda flush_all().
+
+Sadece prices ve campaigns icin uygulandi cunku bunlar cagri sayisi
+en yuksek olan ve donus degeri okunmayan tablolar. find_or_create_product
+hala raw client'ta kalir — yeni urunun id'si anlik lazim oldugu icin
+buffered olamaz (Step 5b'de bulk product resolution ile aciklanir).
+
+Beklenen kazanc: prices+campaigns 5528 + ~3000 = 8500 call yerine
+~12-20 call. ~30dk net kazanc; sweep 86dk -> 56dk civarina iner.
+
+Etki:
+- backend/workers/core.py: BulkWriter sinifi + insert_price /
+  insert_campaign imzalari 'inserter: SupabaseClient | BulkWriter'
+- backend/workers/run_marketfiyati.py: tek paylasilan BulkWriter
+  6 market arasinda; finalize'da flush_all() ONCE finish_scrape_run.
+- backend/workers/run_worker.py: per-run BulkWriter; flush_all()
+  sonrasi finish_scrape_run.
+
+Test: BulkWriter chunking + error propagation + interleaved prices/
+campaigns + empty insert no-op smoke test gecti.
+---
+ backend/workers/core.py             | 88 +++++++++++++++++++++++++++--
+ backend/workers/run_marketfiyati.py | 33 ++++++++++-
+ backend/workers/run_worker.py       | 20 ++++++-
+ 3 files changed, 133 insertions(+), 8 deletions(-)
+
+diff --git a/backend/workers/core.py b/backend/workers/core.py
+index 9ca76a3..88925e1 100644
+--- a/backend/workers/core.py
++++ b/backend/workers/core.py
+@@ -188,6 +188,82 @@ class SupabaseClient:
+         return response.json() or []
+ 
+ 
++# ---------------------------------------------------------------------
++# Bulk insert writer
++# ---------------------------------------------------------------------
++# Performans notu — 2026-04-24 live run'da 5528 fiyat satiri tek tek
++# POST edildigi icin sweep ~86dk surdu (RTT ~400ms ortalama × ~16k call).
++# PostgREST tek POST govdesinde array kabul ediyor; insert_price /
++# insert_campaign cagri sayisini 500'luk chunk yazarak ~5528'den ~12'ye
++# dusurebiliriz. Beklenti: prices+campaigns uzerinde ~30dk net kazanc.
++# (find_or_create_product hala satir basi calisir — onun bulk hali Step 5b.)
++#
++# Kullanim:
++#     writer = BulkWriter(client, flush_size=500)
++#     ...
++#     insert_price(writer, ...)            # buffered
++#     insert_campaign(writer, ...)         # buffered
++#     ...
++#     writer.flush_all()                   # finish_scrape_run'dan ONCE
++#     finish_scrape_run(client, ...)       # client (raw) — buffer disi
++#
++# Onemli: BulkWriter SADECE INSERT'i bufferlar. SELECT/UPSERT/UPDATE
++# pass-through degil; bunlar icin raw SupabaseClient kullan.
++class BulkWriter:
++    """Buffered drop-in for SupabaseClient.insert(table, rows)."""
++
++    def __init__(
++        self,
++        client: SupabaseClient,
++        *,
++        flush_size: int = 500,
++    ) -> None:
++        if flush_size <= 0:
++            raise ValueError("flush_size > 0 olmali.")
++        self._client = client
++        self._flush_size = flush_size
++        self._buffers: dict[str, list[dict]] = {}
++        self.batches_flushed: int = 0
++        self.rows_flushed: int = 0
++
++    def insert(self, table: str, rows: list[dict]) -> list[dict]:
++        """Buffered insert. Caller donus degerine GUVENMEMELI;
++        flush sonradan olabilir, bos liste donulur."""
++        if not rows:
++            return []
++        buf = self._buffers.setdefault(table, [])
++        buf.extend(rows)
++        # Birikim flush_size'a ulastiysa hemen yaz (bellek + run_id delta
++        # cikarsa erken hata gorulsun).
++        while len(buf) >= self._flush_size:
++            chunk = buf[: self._flush_size]
++            del buf[: self._flush_size]
++            self._flush_chunk(table, chunk)
++        return []
++
++    def _flush_chunk(self, table: str, chunk: list[dict]) -> None:
++        if not chunk:
++            return
++        self._client.insert(table, chunk)
++        self.batches_flushed += 1
++        self.rows_flushed += len(chunk)
++
++    def flush(self, table: str) -> None:
++        """Bir tablonun bekleyen butun satirlarini yaz."""
++        chunk = self._buffers.pop(table, [])
++        self._flush_chunk(table, chunk)
++
++    def flush_all(self) -> None:
++        """Tum tablolarda bekleyenleri yaz. finish_scrape_run'dan ONCE cagir."""
++        # Determinizm icin sirali flush.
++        for table in sorted(self._buffers):
++            self.flush(table)
++
++    def __len__(self) -> int:
++        """Bekleyen toplam satir sayisi (debug)."""
++        return sum(len(rows) for rows in self._buffers.values())
++
++
+ # ---------------------------------------------------------------------
+ # Normalleştirme yardımcıları
+ # ---------------------------------------------------------------------
+@@ -345,13 +421,15 @@ def find_or_create_product(
+ 
+ 
+ def insert_price(
+-    client: SupabaseClient,
++    inserter: "SupabaseClient | BulkWriter",
+     product_id: str | None,
+     item: WorkerItem,
+     run_id: int,
+     source_label: str,
+     stats: RunStats,
+ ) -> None:
++    """Tek fiyat satirini yaz. `inserter` SupabaseClient ise tek POST,
++    BulkWriter ise buffered (flush_size'a ulasinca toplu POST)."""
+     if item.discount_price is None:
+         return
+     payload = {
+@@ -372,18 +450,20 @@ def insert_price(
+         "scrape_run_id": run_id,
+     }
+     try:
+-        client.insert("prices", [payload])
++        inserter.insert("prices", [payload])
+         stats.prices_added += 1
+     except requests.HTTPError as error:
+         stats.errors.append(f"price insert failed: {error}")
+ 
+ 
+ def insert_campaign(
+-    client: SupabaseClient,
++    inserter: "SupabaseClient | BulkWriter",
+     product_id: str | None,
+     item: WorkerItem,
+     stats: RunStats,
+ ) -> None:
++    """Tek kampanya satirini yaz. inserter parametresi insert_price ile ayni
++    semantige sahip (raw client veya BulkWriter)."""
+     if (
+         not item.valid_from
+         or not item.valid_until
+@@ -406,7 +486,7 @@ def insert_campaign(
+         "raw_payload": item.raw,
+     }
+     try:
+-        client.insert("campaigns", [payload])
++        inserter.insert("campaigns", [payload])
+         stats.campaigns_added += 1
+     except requests.HTTPError as error:
+         stats.errors.append(f"campaign insert failed: {error}")
+diff --git a/backend/workers/run_marketfiyati.py b/backend/workers/run_marketfiyati.py
+index c1929a3..44953ce 100644
+--- a/backend/workers/run_marketfiyati.py
++++ b/backend/workers/run_marketfiyati.py
+@@ -54,6 +54,7 @@ if str(_HERE) not in sys.path:
+ import requests  # noqa: E402
+ 
+ from core import (  # noqa: E402
++    BulkWriter,
+     RunStats,
+     SupabaseClient,
+     WorkerItem,
+@@ -161,8 +162,13 @@ def run(args: argparse.Namespace) -> int:
+     # Per-market state
+     per_market: dict[str, dict] = {}
+     supabase: SupabaseClient | None = None
++    writer: BulkWriter | None = None
+     if not args.dry_run:
+         supabase = SupabaseClient.from_env()
++        # Tek BulkWriter tum marketler arasinda paylasilir; prices ve
++        # campaigns tablolari icin ayri buffer'lar tutulur. 500'luk chunk =
++        # ~12 bulk POST (5528 satir icin) yerine ~5528 tekil POST.
++        writer = BulkWriter(supabase, flush_size=500)
+ 
+     for market_id, market_adi in targets:
+         parser = get_parser(market_id)
+@@ -227,15 +233,19 @@ def run(args: argparse.Namespace) -> int:
+ 
+                     if supabase is not None:
+                         try:
++                            # find_or_create_product hala raw client —
++                            # product_id'yi anlik okumak gerekiyor.
+                             product_id = find_or_create_product(
+                                 supabase, item, parser.alias_source, state["stats"]
+                             )
++                            # insert_price / insert_campaign BulkWriter'a
++                            # buffered yazar; flush_all() finalize'da.
+                             insert_price(
+-                                supabase, product_id, item, state["run_id"],
++                                writer, product_id, item, state["run_id"],
+                                 parser.source_label, state["stats"],
+                             )
+                             insert_campaign(
+-                                supabase, product_id, item, state["stats"]
++                                writer, product_id, item, state["stats"]
+                             )
+                             total_writes += 1
+                         except requests.HTTPError as err:
+@@ -268,6 +278,25 @@ def run(args: argparse.Namespace) -> int:
+     # Finalize
+     # --------------------------------------------------------------
+     if supabase is not None:
++        # ONCE bekleyen tum bulk insert'leri yaz — finish_scrape_run sayaci
++        # bu flush'tan sonraki gercek sayilarla esitlenecek. Ayni anda hata
++        # cikarsa tum marketlerin scrape_run'ina partial/failed yansir.
++        if writer is not None:
++            try:
++                writer.flush_all()
++                print(
++                    f"[mf] bulk flush: {writer.batches_flushed} batch, "
++                    f"{writer.rows_flushed} satir"
++                )
++            except Exception as flush_err:
++                print(f"[mf] HATA: flush_all patladi — {flush_err}")
++                # Hatayi tum marketlerin stats'ina yaz
++                for state in per_market.values():
++                    state["stats"].errors.append(
++                        f"bulk flush_all: "
++                        f"{type(flush_err).__name__}: {flush_err}"
++                    )
++
+         for market_id, state in per_market.items():
+             stats: RunStats = state["stats"]
+             status = "success" if not stats.errors else (
+diff --git a/backend/workers/run_worker.py b/backend/workers/run_worker.py
+index 25cd614..4bb4107 100644
+--- a/backend/workers/run_worker.py
++++ b/backend/workers/run_worker.py
+@@ -39,6 +39,7 @@ if str(_HERE) not in sys.path:
+ import requests  # noqa: E402
+ 
+ from core import (  # noqa: E402
++    BulkWriter,
+     SupabaseClient,
+     RunStats,
+     WorkerItem,
+@@ -249,6 +250,9 @@ def run(args: argparse.Namespace) -> int:
+ 
+     # Supabase'e yaz
+     client = SupabaseClient.from_env()
++    # prices + campaigns icin buffered bulk writer (500'lu chunk).
++    # find_or_create_product hala raw client'ta — product_id senkron lazim.
++    writer = BulkWriter(client, flush_size=500)
+     run_id = start_scrape_run(
+         client,
+         market_id=parser.market_id,
+@@ -263,9 +267,9 @@ def run(args: argparse.Namespace) -> int:
+             product_id = find_or_create_product(
+                 client, item, parser.alias_source, stats
+             )
+-            insert_price(client, product_id, item, run_id,
++            insert_price(writer, product_id, item, run_id,
+                          parser.source_label, stats)
+-            insert_campaign(client, product_id, item, stats)
++            insert_campaign(writer, product_id, item, stats)
+         except requests.HTTPError as error:
+             stats.errors.append(f"item {index}: HTTP {error}")
+         except Exception as error:  # pragma: no cover
+@@ -278,6 +282,18 @@ def run(args: argparse.Namespace) -> int:
+                 f"match={stats.products_matched}  new={stats.products_added}"
+             )
+ 
++    # Bekleyen prices/campaigns satirlarini bosalt — finish_scrape_run'dan ONCE.
++    try:
++        writer.flush_all()
++        print(
++            f"[run_worker] bulk flush: {writer.batches_flushed} batch, "
++            f"{writer.rows_flushed} satir"
++        )
++    except Exception as flush_err:
++        stats.errors.append(
++            f"bulk flush_all: {type(flush_err).__name__}: {flush_err}"
++        )
++
+     elapsed = time.time() - started
+     final_status = "success" if not stats.errors else (
+         "partial" if stats.prices_added > 0 else "failed"
+-- 
+2.34.1
+

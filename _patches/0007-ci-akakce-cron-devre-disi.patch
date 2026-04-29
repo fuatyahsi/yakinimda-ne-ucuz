@@ -1,0 +1,41 @@
+From 5f24b95f067b51b3596ee5394d5b407a211bb79a Mon Sep 17 00:00:00 2001
+From: Fuat Yahsi <yahsifuat@gmail.com>
+Date: Mon, 27 Apr 2026 10:18:09 +0300
+Subject: [PATCH] =?UTF-8?q?ci(akakce):=20cron=20devre=20disi=20=E2=80=94?=
+ =?UTF-8?q?=20BIM=20marketfiyati=20canli,=20OCR=20pipeline=20kullanilmiyor?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Akakce broşür OCR pipeline'inin ürettigi extracted_products.json kimse
+tarafından okunmuyordu (bim_akakce.py registry'de yok, orphan). BIM
+artik marketfiyati'dan canli besleniyor (parsers/bim.py, ~725 ürün/sweep).
+Cron'u kapatip workflow'u yedek olarak biraktik — manuel workflow_dispatch
+hala mumkun, schedule yorum olarak kaldı.
+---
+ .github/workflows/akakce-actueller-feed.yml | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/.github/workflows/akakce-actueller-feed.yml b/.github/workflows/akakce-actueller-feed.yml
+index abf3c32..c1cb31d 100644
+--- a/.github/workflows/akakce-actueller-feed.yml
++++ b/.github/workflows/akakce-actueller-feed.yml
+@@ -34,8 +34,13 @@ on:
+     paths:
+       - ".github/workflows/akakce-actueller-feed.yml"
+       - "tools/akakce_worker/**"
+-  schedule:
+-    - cron: "0 5 * * *"
++  # 2026-04-26: cron devre disi. BIM artik marketfiyati'dan canli besleniyor
++  # (parsers/bim.py); akakce broşür OCR pipeline'inin urettigi extracted_products.json
++  # registry'de okunmuyor (bim_akakce.py orphan). Workflow yedek olarak korunuyor;
++  # broşür akisi yeniden gerekirse schedule'i geri ac:
++  #   schedule:
++  #     - cron: "0 5 * * *"
++  # workflow_dispatch ile manuel trigger her zaman mumkun.
+ 
+ jobs:
+   build-actueller-feed:
+-- 
+2.34.1
+

@@ -96,3 +96,10 @@ build-debug.log
 /şok.txt
 /brosurler_sayfa_kaynağı.txt
 /terminal.txt
+
+# Hassas bilgiler — Supabase URL + anon/service_role keys.
+# run-emulator.sh bu dosyayi parse edip --dart-define ile gecirir.
+secrets.txt
+.env
+.env.local
+.env.*.local

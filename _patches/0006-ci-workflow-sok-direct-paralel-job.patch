@@ -1,0 +1,238 @@
+From c74acfe04804cc9feb5401eeab05383d085ad478 Mon Sep 17 00:00:00 2001
+From: Fuat Yahsi <yahsifuat@gmail.com>
+Date: Mon, 27 Apr 2026 10:06:28 +0300
+Subject: [PATCH] ci(workflow): sok-direct'i paralel job olarak ekle
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+marketfiyati-sweep workflow'u tek job'tan 3 job'lik paralel yapiya
+gecirildi:
+
+  1. marketfiyati  : 5 market (a101,bim,carrefoursa,migros,tarim-kredi)
+                     marketfiyati.org.tr API. ~5-10 dk.
+  2. sok-direct    : run_worker.py --market sok --live --mode discover
+                     sokmarket.com.tr Next.js RSC parser. ~5-15 dk.
+  3. sanity        : ikisinin ardindan; >%50 dusus alarmi.
+
+Why: 2026-04-26 sok cutover (parsers/sok_direct.py). Marketfiyati'nin
+SOK kapsami zayif oldugu icin (~%0.9 vs digerlerinde %18-35), sok ayri
+bir kaynak gerektiriyor. Iki kaynagi parallel kosturmak toplam
+sweep suresini en cok birinin suresiyle sinirlar (max(5dk, 15dk) = 15dk
+yerine seri 25dk).
+
+Default'lar:
+  - markets input'u sok HARIC 5 market
+  - sok_max_urls=200 (cron'da agresif degil; ~3000-4000 urun bekleriz)
+  - skip_sok=false (workflow_dispatch'te kontrolu disable etme)
+  - sanity needs=[marketfiyati, sok-direct] + always() — biri fail
+    olsa da delta gorunsun
+
+Cache artifact'lar ayri:
+  - marketfiyati-cache-<run_id>: backend/workers/cache/*.json
+  - sok-direct-cache-<run_id>:   backend/workers/cache/sok_*.json
+
+Concurrency group ortak (`marketfiyati-sweep`) — ayni anda tek sweep.
+---
+ .github/workflows/marketfiyati-sweep.yml | 139 +++++++++++++++++++----
+ 1 file changed, 119 insertions(+), 20 deletions(-)
+
+diff --git a/.github/workflows/marketfiyati-sweep.yml b/.github/workflows/marketfiyati-sweep.yml
+index e66dd8a..8046f8a 100644
+--- a/.github/workflows/marketfiyati-sweep.yml
++++ b/.github/workflows/marketfiyati-sweep.yml
+@@ -1,26 +1,32 @@
+ name: Market Fiyati Sweep
+ 
+-# Marketfiyati.org.tr uzerinden 6 market icin fiyat sweep'i (a101, bim,
+-# carrefoursa, migros, sok, tarim-kredi). Her calisma:
+-#   1. run_marketfiyati.py tum keyword'ler icin POST /api/v2/search cagirir
+-#   2. 6 markete fan-out yazar (Supabase REST + core.SupabaseClient retry)
+-#   3. Basari/basarisizlik farketmeksizin cache/*.json artifact olarak yuklenir
+-#      (kacan kayitlar icin --from-cache kurtarmasi mumkun)
+-#   4. sanity_check.py son 7 gun avg ile kiyaslar; >%50 dusus alarm dondurur
++# 5 market marketfiyati.org.tr (a101, bim, carrefoursa, migros, tarim-kredi)
++# + 1 market sokmarket.com.tr direct (sok). Iki job paralel kosar:
++#
++#   1. marketfiyati : run_marketfiyati.py — 5 market icin tek API sweep,
++#                     fan-out yazim (~5-10 dk).
++#   2. sok-direct   : run_worker.py --market sok --live --mode discover —
++#                     sokmarket.com.tr Next.js RSC parser, kategori BFS
++#                     (~5-15 dk, max_urls'ye gore).
++#   3. sanity       : ikisinin ardindan; son 7 gun avg ile kiyasla
++#                     (>%50 dusus alarm).
+ #
+ # Schedule: TR saatine gore 08:00 ve 20:00 (UTC 05:00 + 17:00).
+-# concurrency: ayni anda tek sweep — uzun surerse bir sonraki kuyrukta bekler.
++# concurrency: ayni anda tek sweep — workflow seviyesinde grup.
++#
++# 2026-04-26 cutover: sok marketfiyati'dan cikarildi (~%0.9 coverage).
++# Bkz. parsers/sok_direct.py ve parsers/sok_marketfiyati.py.
+ 
+ on:
+   workflow_dispatch:
+     inputs:
+       markets:
+-        description: "Market_id'ler (virgulle)"
++        description: "marketfiyati market_id'leri (virgulle, sok HARIC)"
+         required: false
+-        default: "a101,bim,carrefoursa,migros,sok,tarim-kredi"
++        default: "a101,bim,carrefoursa,migros,tarim-kredi"
+         type: string
+       max_keywords:
+-        description: "Keyword limiti (bos = tamami)"
++        description: "marketfiyati keyword limiti (bos = tamami)"
+         required: false
+         default: ""
+         type: string
+@@ -29,6 +35,21 @@ on:
+         required: false
+         default: "1.5"
+         type: string
++      sok_max_urls:
++        description: "sok_direct max URL (bos = tamami; 200 oneri)"
++        required: false
++        default: "200"
++        type: string
++      sok_delay:
++        description: "sok_direct kategori sayfasi arasi delay (sn)"
++        required: false
++        default: "1.0"
++        type: string
++      skip_sok:
++        description: "sok-direct job'ini atla"
++        required: false
++        default: false
++        type: boolean
+       run_sanity:
+         description: "Sonunda sanity_check.py calistir"
+         required: false
+@@ -43,9 +64,12 @@ concurrency:
+   cancel-in-progress: false
+ 
+ jobs:
+-  sweep:
++  # ------------------------------------------------------------------
++  # 5 market marketfiyati sweep
++  # ------------------------------------------------------------------
++  marketfiyati:
+     runs-on: ubuntu-latest
+-    timeout-minutes: 180
++    timeout-minutes: 60
+     permissions:
+       contents: read
+ 
+@@ -69,7 +93,7 @@ jobs:
+         run: |
+           MARKETS="${{ github.event.inputs.markets }}"
+           if [ -z "$MARKETS" ]; then
+-            MARKETS="a101,bim,carrefoursa,migros,sok,tarim-kredi"
++            MARKETS="a101,bim,carrefoursa,migros,tarim-kredi"
+           fi
+           DELAY="${{ github.event.inputs.delay }}"
+           if [ -z "$DELAY" ]; then
+@@ -80,10 +104,10 @@ jobs:
+           if [ -n "$MAX_KEYWORDS" ]; then
+             ARGS+=(--max-keywords "$MAX_KEYWORDS")
+           fi
+-          echo "[workflow] args: ${ARGS[@]}"
+-          python backend/workers/run_marketfiyati.py "${ARGS[@]}"
++          echo "[workflow] marketfiyati args: ${ARGS[@]}"
++          python -u backend/workers/run_marketfiyati.py "${ARGS[@]}"
+ 
+-      - name: Upload cache (recovery payload)
++      - name: Upload marketfiyati cache (recovery payload)
+         if: ${{ always() }}
+         uses: actions/upload-artifact@v4
+         with:
+@@ -92,9 +116,84 @@ jobs:
+           if-no-files-found: warn
+           retention-days: 14
+ 
+-      - name: Sanity check (delta alarm)
+-        if: ${{ always() && (github.event_name != 'workflow_dispatch' || github.event.inputs.run_sanity != 'false') }}
++  # ------------------------------------------------------------------
++  # SOK direct (sokmarket.com.tr RSC) sweep
++  # ------------------------------------------------------------------
++  sok-direct:
++    runs-on: ubuntu-latest
++    timeout-minutes: 60
++    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_sok != 'true' }}
++    permissions:
++      contents: read
++
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++
++      - name: Set up Python
++        uses: actions/setup-python@v5
++        with:
++          python-version: "3.11"
++
++      - name: Install deps
++        run: pip install requests
++
++      - name: Run sok-direct sweep
++        env:
++          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
++          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
++        shell: bash
++        run: |
++          ARGS=(--market sok --live --mode discover)
++          MAX_URLS="${{ github.event.inputs.sok_max_urls }}"
++          if [ -z "$MAX_URLS" ]; then
++            # cron default — agresif olmasin, dengeli kapsam:
++            MAX_URLS="200"
++          fi
++          ARGS+=(--max-urls "$MAX_URLS")
++          # delay parser-side kwarg; run_worker --max-urls disinda parser
++          # default'una guvenir. Sok delay'i parser icinde 1.0s default.
++          # Workflow input olarak verilmek istenirse run_worker'a
++          # --delay/--max-depth parametresi eklenmeli (TODO).
++          echo "[workflow] sok-direct args: ${ARGS[@]}"
++          python -u backend/workers/run_worker.py "${ARGS[@]}"
++
++      - name: Upload sok-direct cache (recovery payload)
++        if: ${{ always() }}
++        uses: actions/upload-artifact@v4
++        with:
++          name: sok-direct-cache-${{ github.run_id }}
++          path: backend/workers/cache/sok_*.json
++          if-no-files-found: warn
++          retention-days: 14
++
++  # ------------------------------------------------------------------
++  # Sanity check — her iki sweep bittikten sonra
++  # ------------------------------------------------------------------
++  sanity:
++    runs-on: ubuntu-latest
++    needs: [marketfiyati, sok-direct]
++    # `always()` — bir job fail etse de diger market'in delta'sini
++    # gormek icin sanity'i koruyoruz; sadece kullanici acikca skip
++    # demediyse.
++    if: ${{ always() && (github.event_name != 'workflow_dispatch' || github.event.inputs.run_sanity != 'false') }}
++    permissions:
++      contents: read
++
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++
++      - name: Set up Python
++        uses: actions/setup-python@v5
++        with:
++          python-version: "3.11"
++
++      - name: Install deps
++        run: pip install requests
++
++      - name: Run sanity check
+         env:
+           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+-        run: python backend/workers/sanity_check.py --skip-if-empty
++        run: python -u backend/workers/sanity_check.py --skip-if-empty
+-- 
+2.34.1
+
