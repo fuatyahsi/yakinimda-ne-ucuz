@@ -754,14 +754,136 @@ class AppProvider extends ChangeNotifier {
     if (selectedMarkets.isEmpty || session == null) {
       _clearActuellerCatalogState();
       _actuellerCatalogSyncMessage = session == null
-          ? 'ÃƒÆ’Ã¢â‚¬â€œnce konumunu seÃƒÆ’Ã‚Â§.'
-          : 'Konum hazÄ±r. Åimdi marketlerini seÃ§.';
+          ? 'Önce konumunu seç.'
+          : 'Konum hazır. Şimdi marketlerini seç.';
       await _savePreferences();
       notifyListeners();
       return;
     }
 
+    // PRIMARY: Supabase'den tum 7 marketin urunlerini cek. Backend cron
+    // marketfiyati + sok_direct + hakmar_express'i Supabase'e yazar; UI bu
+    // hazir veriyi okur (canli marketfiyati API'sine bagimli degil).
+    if (SupabaseService.instance.isReady) {
+      try {
+        final ok = await _syncSupabaseCatalogOptimized(
+          marketIds: selectedMarkets,
+          force: force,
+        );
+        if (ok) {
+          return;
+        }
+      } catch (err) {
+        debugPrint('[Catalog Sync] Supabase primary failed: $err');
+      }
+    }
+
+    // FALLBACK: marketfiyati canli API. Supabase hazir degilse veya bos
+    // donerse devreye girer.
     await _syncMarketFiyatiCatalogOptimized(force: force);
+  }
+
+  /// Supabase'den 12 kok kategori uzerinden secili marketlerin tum
+  /// urunlerini cekip aktuel catalog state'ine yazar. Basariyla preview
+  /// olusturulduysa true; bos donerse false (caller marketfiyati
+  /// fallback'ine duser).
+  Future<bool> _syncSupabaseCatalogOptimized({
+    required List<String> marketIds,
+    required bool force,
+  }) async {
+    if (_isActuellerCatalogSyncing) {
+      return true;
+    }
+    _isActuellerCatalogSyncing = true;
+    _actuellerCatalogSyncMessage = null;
+    notifyListeners();
+
+    try {
+      final now = DateTime.now();
+      final cacheKey = 'supabase::${marketIds.join(',')}';
+      if (!force &&
+          _officialCatalogCacheKey == cacheKey &&
+          _officialCatalogAllItemsCache != null &&
+          _officialCatalogAllItemsCache!.isNotEmpty) {
+        await _applyOfficialCatalogItems(
+          _officialCatalogAllItemsCache!,
+          syncedAt: now,
+        );
+        return true;
+      }
+
+      // Supabase categories tablosundaki 12 kok kategori. browseCategoryItems
+      // RPC'si parent verilince path prefix ile alt kategorileri de toplar.
+      const rootCategoryIds = <String>[
+        'gida',
+        'icecek',
+        'sut-urunleri',
+        'et-tavuk',
+        'meyve-sebze',
+        'firin',
+        'atistirmalik',
+        'kahvaltilik',
+        'dondurulmus',
+        'bebek',
+        'kisisel-bakim',
+        'temizlik',
+      ];
+
+      debugPrint(
+        '[Catalog Sync][supabase] Starting for ${marketIds.length} markets '
+        '${marketIds.toList()}',
+      );
+
+      final allItems = <ActuellerCatalogItem>[];
+      final seenKeys = <String>{};
+      for (final categoryId in rootCategoryIds) {
+        try {
+          final results = await SupabaseService.instance.browseCategoryItems(
+            categoryIds: [categoryId],
+            marketIds: marketIds,
+            limit: 500,
+          );
+          var added = 0;
+          for (final item in results) {
+            if (seenKeys.add(item.id)) {
+              allItems.add(item);
+              added++;
+            }
+          }
+          debugPrint(
+            '[Catalog Sync][supabase] "$categoryId" '
+            'fetched=${results.length} new=$added',
+          );
+        } catch (err) {
+          debugPrint('[Catalog Sync][supabase] "$categoryId" FAIL: $err');
+        }
+      }
+
+      if (allItems.isEmpty) {
+        debugPrint(
+          '[Catalog Sync][supabase] 0 item — fallback marketfiyati gerekli',
+        );
+        return false;
+      }
+
+      debugPrint(
+        '[Catalog Sync][supabase] DONE total=${allItems.length} '
+        'across ${rootCategoryIds.length} categories',
+      );
+      _officialCatalogCacheKey = cacheKey;
+      _officialCatalogAllItemsCache = allItems;
+      await _applyOfficialCatalogItems(allItems, syncedAt: now);
+      return true;
+    } catch (error) {
+      _clearActuellerCatalogState();
+      _actuellerCatalogSyncMessage =
+          repairTurkishText(error.toString().replaceFirst('Exception: ', ''));
+      return false;
+    } finally {
+      _isActuellerCatalogSyncing = false;
+      await _savePreferences();
+      notifyListeners();
+    }
   }
 
   Future<List<ActuellerCatalogItem>> fetchOfficialItemsForSourceCategories({
