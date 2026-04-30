@@ -841,7 +841,7 @@ class AppProvider extends ChangeNotifier {
           final results = await SupabaseService.instance.browseCategoryItems(
             categoryIds: [categoryId],
             marketIds: marketIds,
-            limit: 500,
+            limit: 1000,
           );
           var added = 0;
           for (final item in results) {
