@@ -1094,12 +1094,35 @@ class AppProvider extends ChangeNotifier {
   Future<List<ActuellerCatalogItem>> fetchOfficialSimilarProducts(
     ActuellerCatalogItem item,
   ) async {
+    // PRIMARY: Supabase searchCatalogItems — RPC search_products_with_prices
+    // ile ayni canonical_name/brand match edilen tum marketlerin son fiyati.
+    // Marketfiyati'nin paket-size bazli bulanik match'inden cok daha temiz.
+    if (SupabaseService.instance.isReady) {
+      try {
+        final query = item.productTitle.trim();
+        if (query.isNotEmpty) {
+          final results = await SupabaseService.instance.searchCatalogItems(
+            query: query,
+            marketIds: _preferences.preferredMarkets.isEmpty
+                ? null
+                : _preferences.preferredMarkets,
+            limit: 20,
+          );
+          if (results.isNotEmpty) {
+            return results;
+          }
+        }
+      } catch (err) {
+        debugPrint('[fetchOfficialSimilarProducts] Supabase failed: $err');
+      }
+    }
+
+    // FALLBACK: marketfiyati canli API (eski davranis).
     final session = marketFiyatiSession;
     final sourceProductId = item.sourceProductId;
     if (session == null || sourceProductId == null || sourceProductId.isEmpty) {
       return const [];
     }
-
     final response = await _marketFiyatiSourceService.searchSimilarProduct(
       session: session,
       id: sourceProductId,

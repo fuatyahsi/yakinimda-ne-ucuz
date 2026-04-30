@@ -613,8 +613,11 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
         alternatives: alternatives,
       );
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
         SnackBar(
+          duration: const Duration(seconds: 2),
           content: Text(
             isNew
                 ? '\u00DCr\u00FCn al\u0131\u015Fveri\u015F listene eklendi.'
