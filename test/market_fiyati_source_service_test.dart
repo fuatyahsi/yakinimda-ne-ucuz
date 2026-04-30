@@ -54,7 +54,7 @@ void main() {
 
       final items = service.toCatalogItems(response);
       expect(items, hasLength(1));
-      expect(normalizeMarketId(items.first.marketName), 'kooperatif');
+      expect(normalizeMarketId(items.first.marketName), 'tarim-kredi');
       expect(
         items.first.productTitle,
         contains('Ovon Camasir Makine Temizleyici'),
@@ -352,7 +352,7 @@ void main() {
       expect(items, hasLength(3));
       expect(
         items.map((item) => normalizeMarketId(item.marketName)).toSet(),
-        containsAll(<String>{'bim', 'a101', 'kooperatif'}),
+        containsAll(<String>{'bim', 'a101', 'tarim-kredi'}),
       );
       expect(items.first.sourceProductId, '0XIH');
       expect(items.first.sourceDepotId, isNotNull);
