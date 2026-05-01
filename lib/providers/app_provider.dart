@@ -1094,6 +1094,32 @@ class AppProvider extends ChangeNotifier {
   Future<List<ActuellerCatalogItem>> fetchOfficialSimilarProducts(
     ActuellerCatalogItem item,
   ) async {
+    // PRIMARY 1: Supabase EXACT product_id match. ActuellerCatalogItem.
+    // sourceProductId Supabase tarafindan UUID (36 char) olarak set edilir;
+    // marketfiyati'dan gelen item'larda bu UUID degil, marketfiyati'nin
+    // kendi ID'si olur (kisa). UUID ise exact match (RPC), aksi halde
+    // text search'e dus.
+    if (SupabaseService.instance.isReady) {
+      final pid = item.sourceProductId;
+      if (pid != null && pid.length == 36) {
+        try {
+          final exact = await SupabaseService.instance
+              .fetchProductAcrossMarkets(
+            productId: pid,
+            marketIds: _preferences.preferredMarkets.isEmpty
+                ? null
+                : _preferences.preferredMarkets,
+          );
+          if (exact.isNotEmpty) {
+            return exact;
+          }
+        } catch (err) {
+          debugPrint('[fetchOfficialSimilarProducts] exact failed: $err');
+        }
+      }
+    }
+
+    // PRIMARY 2: Supabase text search (fuzzy, marketfiyati origin item'lar icin).
     // PRIMARY: Supabase searchCatalogItems — RPC search_products_with_prices
     // ile ayni canonical_name/brand match edilen tum marketlerin son fiyati.
     // Marketfiyati'nin paket-size bazli bulanik match'inden cok daha temiz.

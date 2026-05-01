@@ -166,6 +166,29 @@ class SupabaseService {
   }
 
   // -------------------------------------------------------------------
+  // RPC: get_product_market_prices
+  //
+  // Bir Supabase product UUID'si icin TUM marketlerin son fiyatini
+  // doner — text-fuzzy degil EXACT match. Ana ekrandaki "market
+  // karsilastirma" ekrani icin (ayni urun, farkli marketler).
+  // -------------------------------------------------------------------
+  Future<List<ActuellerCatalogItem>> fetchProductAcrossMarkets({
+    required String productId,
+    Iterable<String>? marketIds,
+  }) async {
+    if (!isReady || productId.isEmpty) return const [];
+    final params = <String, dynamic>{
+      'p_product_id': productId,
+      'p_market_ids': marketIds == null || marketIds.isEmpty
+          ? null
+          : marketIds.toList(),
+    };
+    final rows =
+        await _client.rpc('get_product_market_prices', params: params);
+    return _mapRpcRows(rows as List, sourceLabel: 'Supabase-exact');
+  }
+
+  // -------------------------------------------------------------------
   // Helper: RPC satirlarini ActuellerCatalogItem'a donustur.
   // -------------------------------------------------------------------
   List<ActuellerCatalogItem> _mapRpcRows(
