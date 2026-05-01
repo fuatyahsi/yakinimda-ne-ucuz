@@ -1,0 +1,123 @@
+name: Supabase Migrate
+
+# backend/migrations/*.sql dosyalari push'lanir push'lanmaz Supabase Postgres'e
+# uygulanir. Idempotent: schema_migrations tablosunda hangi dosyalarin
+# uygulandigini izler, ayni dosyayi tekrar koşturmaz. Yeni dosya eklendiginde
+# (sırali, alfabetik) sadece o calisir.
+#
+# Setup (bir kez yapılır):
+#   1) Supabase Dashboard -> Project Settings -> Database -> Connection string
+#      'Transaction' (port 6543) veya 'Session' (port 5432) URI kopyala.
+#      Format: postgres://postgres.<ref>:<password>@<host>:6543/postgres
+#   2) GitHub repo Settings -> Secrets and variables -> Actions
+#      -> New repository secret:
+#         Name:  SUPABASE_DB_URL
+#         Value: <yukaridaki URI>
+#   3) Push edince bu workflow tetiklenir; ilk run schema_migrations tablosunu
+#      bootstrap'lar ve var olan tum SQL'i isaretler (zaten manuel uygulandi).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/migrations/**.sql"
+      - ".github/workflows/supabase-migrate.yml"
+  workflow_dispatch:
+    inputs:
+      force_reapply:
+        description: "Ignore schema_migrations and re-run every file (DANGER)"
+        required: false
+        default: false
+        type: boolean
+      bootstrap_only:
+        description: "Only bootstrap schema_migrations (mark all as applied without running)"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: supabase-migrate
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          psql --version
+
+      - name: Bootstrap schema_migrations table
+        env:
+          PGURL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          psql "$PGURL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE IF NOT EXISTS schema_migrations (
+            filename   TEXT PRIMARY KEY,
+            sha256     TEXT NOT NULL,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          );
+          SQL
+
+      - name: Apply pending migrations
+        env:
+          PGURL: ${{ secrets.SUPABASE_DB_URL }}
+          FORCE_REAPPLY: ${{ github.event.inputs.force_reapply }}
+          BOOTSTRAP_ONLY: ${{ github.event.inputs.bootstrap_only }}
+        shell: bash
+        run: |
+          cd backend/migrations
+          shopt -s nullglob
+          files=( $(ls *.sql 2>/dev/null | sort) )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No migration files found."
+            exit 0
+          fi
+
+          echo "::group::Migration plan"
+          for f in "${files[@]}"; do echo "  - $f"; done
+          echo "::endgroup::"
+
+          for f in "${files[@]}"; do
+            sha=$(sha256sum "$f" | awk '{print $1}')
+
+            already=$(psql "$PGURL" -At -c \
+              "SELECT sha256 FROM schema_migrations WHERE filename='$f'" || true)
+
+            if [ "$BOOTSTRAP_ONLY" = "true" ]; then
+              if [ -z "$already" ]; then
+                echo "[bootstrap] mark $f as applied (sha=$sha)"
+                psql "$PGURL" -v ON_ERROR_STOP=1 -c \
+                  "INSERT INTO schema_migrations(filename,sha256) VALUES ('$f','$sha')"
+              else
+                echo "[bootstrap] $f already tracked"
+              fi
+              continue
+            fi
+
+            if [ -n "$already" ] && [ "$FORCE_REAPPLY" != "true" ]; then
+              if [ "$already" != "$sha" ]; then
+                echo "::warning file=$f::Hash drift! tracked=$already current=$sha. (Use force_reapply to overwrite.)"
+              else
+                echo "[skip] $f already applied"
+              fi
+              continue
+            fi
+
+            echo "::group::Applying $f"
+            psql "$PGURL" -v ON_ERROR_STOP=1 -f "$f"
+            psql "$PGURL" -v ON_ERROR_STOP=1 -c \
+              "INSERT INTO schema_migrations(filename,sha256) VALUES ('$f','$sha')
+               ON CONFLICT (filename) DO UPDATE SET sha256=excluded.sha256, applied_at=now()"
+            echo "::endgroup::"
+          done
+          echo "Done."
