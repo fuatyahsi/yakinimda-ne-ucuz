@@ -275,8 +275,75 @@ def slugify(value: str) -> str:
     return text.strip("-")
 
 
+_SIZE_UNIT_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*"
+    r"(lt|litre|l|kilogram|kg|gram|gr|g|mililitre|ml)\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_size_unit(match: "re.Match[str]") -> str:
+    """Match'i base unit'e cevir.
+
+    L  -> ml (size *= 1000)
+    kg -> g  (size *= 1000)
+    g  -> g
+    ml -> ml
+
+    Boylelikle '0.5 l' ve '500 ml' ayni 'search_text'e dusup dedupe olabilir.
+    """
+    try:
+        num = float(match.group(1).replace(",", "."))
+    except (TypeError, ValueError):
+        return match.group(0)
+    unit = match.group(2).lower()
+    if unit in ("lt", "litre", "l"):
+        return f"{round(num * 1000)}ml"
+    if unit in ("kilogram", "kg"):
+        return f"{round(num * 1000)}g"
+    if unit in ("gram", "gr", "g"):
+        return f"{round(num)}g"
+    if unit in ("mililitre", "ml"):
+        return f"{round(num)}ml"
+    return match.group(0)
+
+
 def normalize_search_text(value: str) -> str:
-    return re.sub(r"\s+", " ", slugify(value).replace("-", " ")).strip()
+    """Aggressive normalize — Tier 2 dedupe icin search_text uretir.
+
+    1. Lower + Turkce karakter -> ASCII
+    2. Decimal: '0,5' -> '0.5'
+    3. Size+unit -> base unit (L->ml, kg->g)
+    4. Non-alphanumeric -> space
+    5. Whitespace collapse + ardisik tekrar word dedupe ('5L 5L' -> '5000ml')
+
+    Garantiler:
+        normalize('Saka Su 0.5 L')  == normalize('Saka Su 500 ml')
+        normalize('Eti 100 gr')     == normalize('Eti 100g')   == normalize('Eti 0.1 KG')
+        normalize('Sut 1 Lt')       == normalize('Sut 1L')     == normalize('Sut 1000 ml')
+    """
+    text = (value or "").lower()
+    # Turkish chars -> ASCII (slugify mantigi ama dot korunur ki decimal gitmesin)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.replace("ı", "i")
+    # Decimal: 0,5 -> 0.5
+    text = re.sub(r"(\d),(\d)", r"\1.\2", text)
+    # Size+unit -> base unit
+    text = _SIZE_UNIT_RE.sub(_normalize_size_unit, text)
+    # Non-alphanumeric -> space
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    # Whitespace collapse
+    text = re.sub(r"\s+", " ", text).strip()
+    # Ardisik tekrar tokenleri sil ('5000ml 5000ml' -> '5000ml')
+    parts = text.split(" ")
+    if len(parts) > 1:
+        out = [parts[0]]
+        for p in parts[1:]:
+            if p != out[-1]:
+                out.append(p)
+        text = " ".join(out)
+    return text
 
 
 PACKAGE_PATTERNS = [
@@ -328,6 +395,10 @@ class WorkerItem:
     source_url: str | None = None
     ocr_text: str | None = None
     confidence: float = 0.9
+    # Tier 1 dedupe icin EAN-13 barkod. sok_direct + hakmar_express RSC'den
+    # geliyor; marketfiyati genelde dondurmaz. None ise Tier 2 (brand+size+unit)
+    # ya da Tier 3 (alias-source) yoluyla match dener.
+    barcode: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     def canonical_key(self) -> str:
@@ -355,8 +426,20 @@ def find_or_create_product(
     alias_source: str,
     stats: RunStats,
 ) -> str | None:
+    """Item icin Supabase product_id bul/yarat.
+
+    Match tier'lari (yukaridan asagi, ilk basari kazanir):
+      0. (alias, source) ciftti — bu marketin daha once gordugu ayni urun
+      1. barcode UNIQUE — markets ARASI kesin dedupe (Su 0.5L != Su 500ml farki)
+      2. brand + search_text + package_size + package_unit — kanonik match
+      3. canonical_name exact — eski davranis (legacy fallback)
+      4. yeni urun INSERT
+    Match basarili olursa alias kaydi UPSERT edilir (Tier 0 disindaki
+    tier'lar icin yeni alias yazilir; ayni source icin ayri product yaratmaz).
+    """
     alias = item.canonical_key()
 
+    # Tier 0: bu market'in alias'i
     rows = client.select(
         "product_aliases",
         {
@@ -369,38 +452,77 @@ def find_or_create_product(
         stats.products_matched += 1
         return rows[0]["product_id"]
 
-    rows = client.select(
-        "products",
-        {
-            "canonical_name": f"eq.{item.product_name}",
-            "select": "id",
-            "limit": "1",
-        },
-    )
-    if rows:
-        product_id = rows[0]["id"]
-        stats.products_matched += 1
-    else:
-        size, unit = extract_package(item.product_name)
-        created = client.insert(
+    product_id: str | None = None
+
+    # Tier 1: barcode UNIQUE
+    if item.barcode:
+        rows = client.select(
             "products",
-            [
-                {
-                    "canonical_name": item.product_name,
-                    "brand": item.brand,
-                    "package_size": size,
-                    "package_unit": unit,
-                    "search_text": normalize_search_text(item.product_name),
-                    "image_url": item.image_url,
-                }
-            ],
+            {
+                "barcode": f"eq.{item.barcode}",
+                "select": "id",
+                "limit": "1",
+            },
         )
+        if rows:
+            product_id = rows[0]["id"]
+            stats.products_matched += 1
+
+    # Tier 2: brand + search_text + package_size + package_unit
+    if product_id is None and item.brand:
+        normalized_search = normalize_search_text(item.product_name)
+        size, unit = extract_package(item.product_name)
+        if normalized_search:
+            params: dict[str, str] = {
+                "brand": f"eq.{item.brand}",
+                "search_text": f"eq.{normalized_search}",
+                "select": "id",
+                "limit": "1",
+            }
+            if size is not None:
+                params["package_size"] = f"eq.{size}"
+            if unit:
+                params["package_unit"] = f"eq.{unit}"
+            rows = client.select("products", params)
+            if rows:
+                product_id = rows[0]["id"]
+                stats.products_matched += 1
+
+    # Tier 3: canonical_name exact (legacy)
+    if product_id is None:
+        rows = client.select(
+            "products",
+            {
+                "canonical_name": f"eq.{item.product_name}",
+                "select": "id",
+                "limit": "1",
+            },
+        )
+        if rows:
+            product_id = rows[0]["id"]
+            stats.products_matched += 1
+
+    # Tier 4: yeni product INSERT
+    if product_id is None:
+        size, unit = extract_package(item.product_name)
+        payload: dict[str, Any] = {
+            "canonical_name": item.product_name,
+            "brand": item.brand,
+            "package_size": size,
+            "package_unit": unit,
+            "search_text": normalize_search_text(item.product_name),
+            "image_url": item.image_url,
+        }
+        if item.barcode:
+            payload["barcode"] = item.barcode
+        created = client.insert("products", [payload])
         if not created:
             stats.errors.append(f"product insert failed: {item.product_name}")
             return None
         product_id = created[0]["id"]
         stats.products_added += 1
 
+    # Tier 1-3'te product bulunup ama o source icin alias'i yoksa, alias yaz
     try:
         client.upsert(
             "product_aliases",
@@ -519,7 +641,41 @@ class BulkProductResolver:
             for r in rows:
                 alias_to_pid[r["alias"]] = r["product_id"]
 
-        # 2) Eksik alias'lari bul, bunlarin canonical_name set'ini cikar.
+        # 2) Tier 1: Bulk barcode lookup. Markets ARASI kesin dedupe icin.
+        #    Eksik alias'i olan item'larin barkodlarini topla, products
+        #    tablosundan barcode=in.(...) ile match et.
+        missing_idxs = [
+            idx
+            for idx, a in aliases_by_idx.items()
+            if a and a not in alias_to_pid
+        ]
+        barcodes_by_idx: dict[int, str] = {
+            idx: items[idx].barcode
+            for idx in missing_idxs
+            if items[idx].barcode
+        }
+        unique_barcodes = sorted(set(barcodes_by_idx.values()))
+        barcode_to_pid: dict[str, str] = {}
+        if unique_barcodes:
+            rows = self._client.select(
+                "products",
+                {
+                    "barcode": _build_in_filter(unique_barcodes),
+                    "select": "id,barcode",
+                },
+            )
+            for r in rows:
+                bc = r.get("barcode")
+                if bc:
+                    barcode_to_pid[str(bc)] = r["id"]
+            # Barcode hit'lerini alias mapping'e bagla
+            for idx, bc in barcodes_by_idx.items():
+                pid = barcode_to_pid.get(bc)
+                if pid:
+                    alias_to_pid[aliases_by_idx[idx]] = pid
+
+        # 2b) Hala eksik kalanlar (barcode hit etmedi veya barcode yok):
+        #     canonical_name lookup (Tier 3).
         missing_idxs = [
             idx
             for idx, a in aliases_by_idx.items()
@@ -542,9 +698,9 @@ class BulkProductResolver:
             for r in rows:
                 name_to_pid[r["canonical_name"]] = r["id"]
 
-        # 3) Hala yoklari INSERT et. Ayni canonical_name farkli item'larda
-        #    tekrar etmis olabilir — ilk geleni al (deterministik for stable
-        #    brand/image_url choice).
+        # 3) Hala yoklari INSERT et. Barcode varsa payload'a ekle —
+        #    UNIQUE constraint sayesinde duplicate barcode atilamaz, sonraki
+        #    sweep'lerde Tier 1 lookup'la merge gerceklesir.
         names_to_create = [n for n in unique_names if n not in name_to_pid]
         if names_to_create:
             first_item_for_name: dict[str, WorkerItem] = {}
@@ -557,16 +713,17 @@ class BulkProductResolver:
             for name in names_to_create:
                 it = first_item_for_name[name]
                 size, unit = extract_package(name)
-                payloads.append(
-                    {
-                        "canonical_name": name,
-                        "brand": it.brand,
-                        "package_size": size,
-                        "package_unit": unit,
-                        "search_text": normalize_search_text(name),
-                        "image_url": it.image_url,
-                    }
-                )
+                payload = {
+                    "canonical_name": name,
+                    "brand": it.brand,
+                    "package_size": size,
+                    "package_unit": unit,
+                    "search_text": normalize_search_text(name),
+                    "image_url": it.image_url,
+                }
+                if it.barcode:
+                    payload["barcode"] = it.barcode
+                payloads.append(payload)
             created = self._client.insert("products", payloads)
             for row in created:
                 name_to_pid[row["canonical_name"]] = row["id"]
