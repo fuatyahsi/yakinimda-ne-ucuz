@@ -851,29 +851,59 @@ class AppProvider extends ChangeNotifier {
         '${marketIds.toList()}',
       );
 
-      final allItems = <ActuellerCatalogItem>[];
-      final seenKeys = <String>{};
-      for (final categoryId in rootCategoryIds) {
-        try {
-          final results = await SupabaseService.instance.browseCategoryItems(
-            categoryIds: [categoryId],
-            marketIds: marketIds,
-            limit: 1000,
-          );
-          var added = 0;
-          for (final item in results) {
-            if (seenKeys.add(item.id)) {
-              allItems.add(item);
-              added++;
+      // 12 kategori RPC'sini PARALEL gonder (Future.wait + eagerError:false).
+      // Server-side her RPC 0.3-1s, paralel toplam ~2-3s. Seri loop +
+      // emulator->Supabase agi geciktiklerinden statement timeout (57014)
+      // hit ediyordu; paralel gonderim Supabase Dart client'in connection
+      // pool'unu daha verimli kullaniyor.
+      // Per-call timeout 25s + bir defalik retry: transient slowdown'lara
+      // karsi defansif. Limit 1000 -> 500 (server-side query yarisi).
+      Future<List<ActuellerCatalogItem>> _fetchCategory(
+          String categoryId) async {
+        Object? lastErr;
+        for (var attempt = 0; attempt < 2; attempt++) {
+          try {
+            return await SupabaseService.instance
+                .browseCategoryItems(
+                  categoryIds: [categoryId],
+                  marketIds: marketIds,
+                  limit: 500,
+                )
+                .timeout(const Duration(seconds: 25));
+          } catch (err) {
+            lastErr = err;
+            if (attempt == 0) {
+              await Future<void>.delayed(const Duration(milliseconds: 600));
             }
           }
-          debugPrint(
-            '[Catalog Sync][supabase] "$categoryId" '
-            'fetched=${results.length} new=$added',
-          );
-        } catch (err) {
-          debugPrint('[Catalog Sync][supabase] "$categoryId" FAIL: $err');
         }
+        debugPrint(
+          '[Catalog Sync][supabase] "$categoryId" FAIL after retry: $lastErr',
+        );
+        return const [];
+      }
+
+      final fetched = await Future.wait(
+        rootCategoryIds.map(_fetchCategory),
+        eagerError: false,
+      );
+
+      final allItems = <ActuellerCatalogItem>[];
+      final seenKeys = <String>{};
+      for (var i = 0; i < rootCategoryIds.length; i++) {
+        final categoryId = rootCategoryIds[i];
+        final results = fetched[i];
+        var added = 0;
+        for (final item in results) {
+          if (seenKeys.add(item.id)) {
+            allItems.add(item);
+            added++;
+          }
+        }
+        debugPrint(
+          '[Catalog Sync][supabase] "$categoryId" '
+          'fetched=${results.length} new=$added',
+        );
       }
 
       if (allItems.isEmpty) {
