@@ -4,7 +4,8 @@
   'sok': 'ŞOK',
   'migros': 'Migros',
   'carrefoursa': 'CarrefourSA',
-  'hakmar': 'Hakmar Express',
+  'hakmar': 'Hakmar',
+  'hakmar-express': 'Hakmar Express',
   'metro': 'Metro',
   // Supabase `markets` tablosundaki ID ile hizalandi (eski: 'kooperatif').
   'tarim-kredi': 'Tarım Kredi',
@@ -24,7 +25,19 @@ const marketAliasesById = <String, List<String>>{
   'sok': ['sok', 'şok', 'şok'],
   'migros': ['migros'],
   'carrefoursa': ['carrefoursa', 'carrefour sa', 'carrefour'],
-  'hakmar': ['hakmar', 'hakmar express'],
+  // 2026-05-02: hakmar (ana zincir, online satis yok) ve hakmar-express
+  // (Cepte Hakmar Express, online katalog) farkli market_id'ler — Supabase
+  // markets tablosunda iki ayri satir, parsers/__init__.py registry'sinde
+  // iki ayri parser. Onceki yapida hakmar-express alias olarak hakmar'a
+  // map ediliyordu, kullanici secimi state'e yansimiyordu.
+  'hakmar': ['hakmar'],
+  'hakmar-express': [
+    'hakmar express',
+    'hakmarexpress',
+    'hakmar-express',
+    'cepte hakmar',
+    'ceptehakmar',
+  ],
   'metro': ['metro', 'metro tr', 'metro-tr'],
   // Supabase'deki kanonik ID 'tarim-kredi'. Eski 'kooperatif' ID'sini alias
   // olarak tutuyoruz ki SharedPreferences'ta saklanmis eski secimler okurken
