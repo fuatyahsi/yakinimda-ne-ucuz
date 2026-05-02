@@ -453,8 +453,25 @@ class AppProvider extends ChangeNotifier {
       List.unmodifiable(_shoppingListEntries);
 
   int get shoppingListCount => _shoppingListEntries.length;
-  List<String> get marketFiyatiAvailableMarketIds =>
-      List.unmodifiable(_marketFiyatiAvailableMarketIds);
+
+  /// Market secim modal'i bu listeyi tuketir. Daha once SADECE marketfiyati
+  /// depot listesinden ureyiyordu — HAKMAR Express ve diger Supabase-only
+  /// zincirler gozukmuyordu. Simdi Supabase markets (is_active=true) UNION
+  /// marketfiyati depot listesi: ne fazla ne eksik. Tier sirasi: Supabase
+  /// markets[].sort_order, sonra alfabetik.
+  List<String> get marketFiyatiAvailableMarketIds {
+    if (_supabaseMarkets.isEmpty) {
+      return List.unmodifiable(_marketFiyatiAvailableMarketIds);
+    }
+    final union = <String>{};
+    for (final m in _supabaseMarkets) {
+      union.add(m.id);
+    }
+    for (final mid in _marketFiyatiAvailableMarketIds) {
+      union.add(mid);
+    }
+    return List.unmodifiable(union);
+  }
 
   /// Supabase `markets` tablosundan cache'lenmis aktif market listesi.
   /// Supabase hazir degilse veya fetch basarisizsa bos liste doner.
