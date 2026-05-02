@@ -867,13 +867,13 @@ class AppProvider extends ChangeNotifier {
                 .browseCategoryItems(
                   categoryIds: [categoryId],
                   marketIds: marketIds,
-                  limit: 500,
+                  limit: 1000,
                 )
-                .timeout(const Duration(seconds: 25));
+                .timeout(const Duration(seconds: 30));
           } catch (err) {
             lastErr = err;
             if (attempt == 0) {
-              await Future<void>.delayed(const Duration(milliseconds: 600));
+              await Future<void>.delayed(const Duration(milliseconds: 800));
             }
           }
         }
