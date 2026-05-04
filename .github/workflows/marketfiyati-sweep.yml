@@ -17,7 +17,11 @@ name: Market Fiyati Sweep
 #   4. sanity                : ucu bittikten sonra; son 7 gun avg ile kiyas
 #                              (>%50 dusus alarm).
 #
-# Schedule: TR saatine gore 08:00 ve 20:00 (UTC 05:00 + 17:00).
+# Schedule: TR 03:00 (UTC 00:00) — magazalar kapali, gece full sweep
+#           TR 14:00 (UTC 11:00) — gunduz refresh, ogleden sonra
+# Hiz onemli degil: gece 3-4 saat surse bile sabah 06-07'de hazir.
+# Default (cron tetigi): tum katalog limitsiz; max_urls inputs sadece
+# manuel workflow_dispatch testleri icin.
 # concurrency: ayni anda tek sweep — workflow seviyesinde grup.
 #
 # 2026-04-26 cutover: sok marketfiyati'dan cikarildi (~%0.9 coverage).
@@ -53,9 +57,9 @@ on:
         default: "1.5"
         type: string
       sok_max_urls:
-        description: "sok_direct max URL (bos = tamami; 200 oneri)"
+        description: "sok_direct max URL (bos = tamami)"
         required: false
-        default: "200"
+        default: ""
         type: string
       sok_delay:
         description: "sok_direct kategori sayfasi arasi delay (sn)"
@@ -68,9 +72,9 @@ on:
         default: false
         type: boolean
       hakmar_express_max_urls:
-        description: "hakmar-express max kategori URL (bos = tamami; 200 oneri)"
+        description: "hakmar-express max kategori URL (bos = tamami)"
         required: false
-        default: "200"
+        default: ""
         type: string
       skip_hakmar_express:
         description: "hakmar-express-direct job'ini atla"
@@ -83,8 +87,10 @@ on:
         default: true
         type: boolean
   schedule:
-    - cron: "0 5 * * *"
-    - cron: "0 17 * * *"
+    # TR 03:00 — magazalar kapali, full sweep gece yapilir, sabaha hazir
+    - cron: "0 0 * * *"
+    # TR 14:00 — gunduz refresh; gece veri zaten var
+    - cron: "0 11 * * *"
 
 concurrency:
   group: marketfiyati-sweep
@@ -96,7 +102,7 @@ jobs:
   # ------------------------------------------------------------------
   marketfiyati:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
     permissions:
       contents: read
 
@@ -148,7 +154,7 @@ jobs:
   # ------------------------------------------------------------------
   sok-direct:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_sok != 'true' }}
     permissions:
       contents: read
@@ -173,11 +179,11 @@ jobs:
         run: |
           ARGS=(--market sok --live --mode discover)
           MAX_URLS="${{ github.event.inputs.sok_max_urls }}"
-          if [ -z "$MAX_URLS" ]; then
-            # cron default — agresif olmasin, dengeli kapsam:
-            MAX_URLS="200"
+          # Cron tetigi (schedule) input vermez -> bos -> tam katalog
+          # workflow_dispatch ile manuel deneme icin sayi verilebilir
+          if [ -n "$MAX_URLS" ]; then
+            ARGS+=(--max-urls "$MAX_URLS")
           fi
-          ARGS+=(--max-urls "$MAX_URLS")
           # delay parser-side kwarg; run_worker --max-urls disinda parser
           # default'una guvenir. Sok delay'i parser icinde 1.0s default.
           # Workflow input olarak verilmek istenirse run_worker'a
@@ -199,7 +205,7 @@ jobs:
   # ------------------------------------------------------------------
   hakmar-express-direct:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
     if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_hakmar_express != 'true' }}
     permissions:
       contents: read
@@ -224,11 +230,10 @@ jobs:
         run: |
           ARGS=(--market hakmar-express --live --mode category)
           MAX_URLS="${{ github.event.inputs.hakmar_express_max_urls }}"
-          if [ -z "$MAX_URLS" ]; then
-            # cron default — 200 kategori (~10dk; ~4000+ urun bekleriz):
-            MAX_URLS="200"
+          # Cron tetigi -> bos -> tum 193 kategori (~30dk, ~4000+ urun)
+          if [ -n "$MAX_URLS" ]; then
+            ARGS+=(--max-urls "$MAX_URLS")
           fi
-          ARGS+=(--max-urls "$MAX_URLS")
           echo "[workflow] hakmar-express-direct args: ${ARGS[@]}"
           python -u backend/workers/run_worker.py "${ARGS[@]}"
 
