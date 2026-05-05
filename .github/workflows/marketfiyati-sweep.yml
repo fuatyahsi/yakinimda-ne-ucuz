@@ -137,6 +137,12 @@ jobs:
           if [ -n "$MAX_KEYWORDS" ]; then
             ARGS+=(--max-keywords "$MAX_KEYWORDS")
           fi
+          # Gunduz cron (TR 14:00 = UTC 11:00) -> delta mode (snapshot ile DB
+          # writes %80-95 azalir). Gece cron (TR 03:00 = UTC 00:00) full mode.
+          if [ "${{ github.event.schedule }}" = "0 11 * * *" ]; then
+            ARGS+=(--delta-mode)
+            echo "[workflow] gunduz cron tetigi -> delta mode aktif"
+          fi
           echo "[workflow] marketfiyati args: ${ARGS[@]}"
           python -u backend/workers/run_marketfiyati.py "${ARGS[@]}"
 
@@ -179,15 +185,13 @@ jobs:
         run: |
           ARGS=(--market sok --live --mode discover)
           MAX_URLS="${{ github.event.inputs.sok_max_urls }}"
-          # Cron tetigi (schedule) input vermez -> bos -> tam katalog
-          # workflow_dispatch ile manuel deneme icin sayi verilebilir
           if [ -n "$MAX_URLS" ]; then
             ARGS+=(--max-urls "$MAX_URLS")
           fi
-          # delay parser-side kwarg; run_worker --max-urls disinda parser
-          # default'una guvenir. Sok delay'i parser icinde 1.0s default.
-          # Workflow input olarak verilmek istenirse run_worker'a
-          # --delay/--max-depth parametresi eklenmeli (TODO).
+          # Gunduz cron -> delta mode (DB write azaltir)
+          if [ "${{ github.event.schedule }}" = "0 11 * * *" ]; then
+            ARGS+=(--delta-mode)
+          fi
           echo "[workflow] sok-direct args: ${ARGS[@]}"
           python -u backend/workers/run_worker.py "${ARGS[@]}"
 
@@ -230,9 +234,12 @@ jobs:
         run: |
           ARGS=(--market hakmar-express --live --mode category)
           MAX_URLS="${{ github.event.inputs.hakmar_express_max_urls }}"
-          # Cron tetigi -> bos -> tum 193 kategori (~30dk, ~4000+ urun)
           if [ -n "$MAX_URLS" ]; then
             ARGS+=(--max-urls "$MAX_URLS")
+          fi
+          # Gunduz cron -> delta mode (DB write azaltir)
+          if [ "${{ github.event.schedule }}" = "0 11 * * *" ]; then
+            ARGS+=(--delta-mode)
           fi
           echo "[workflow] hakmar-express-direct args: ${ARGS[@]}"
           python -u backend/workers/run_worker.py "${ARGS[@]}"

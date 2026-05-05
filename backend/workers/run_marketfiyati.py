@@ -114,6 +114,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="Per-market cache dosyasi yazma")
     p.add_argument("--verbose", action="store_true",
                    help="marketfiyati client log'u gorsun")
+    p.add_argument(
+        "--delta-mode",
+        action="store_true",
+        help=(
+            "Delta sweep: sweep basinda latest_prices snapshot'i alinir, "
+            "ayni fiyatli urunler icin INSERT atlanir. Gunduz refresh icin "
+            "DB writes %80-95 azalir, sweep yine tum katalogu tarar."
+        ),
+    )
     return p
 
 
@@ -177,6 +186,20 @@ def run(args: argparse.Namespace) -> int:
         # ~12 bulk POST (5528 satir icin) yerine ~5528 tekil POST.
         writer = BulkWriter(supabase, flush_size=500)
 
+    # Delta mode: sweep basinda tek RPC ile latest_prices snapshot al;
+    # insert_price ayni fiyatli urunler icin INSERT atlar.
+    last_prices_map: dict | None = None
+    if args.delta_mode and supabase is not None:
+        target_ids = [m for m, _ in targets]
+        print(f"[mf][delta] snapshot fetching for {len(target_ids)} markets...")
+        from core import fetch_latest_prices_snapshot  # noqa: E402
+        t0 = time.time()
+        last_prices_map = fetch_latest_prices_snapshot(supabase, target_ids)
+        print(
+            f"[mf][delta] snapshot loaded: {len(last_prices_map)} (product, market) "
+            f"price pairs in {time.time()-t0:.1f}s"
+        )
+
     for market_id, market_adi in targets:
         parser = get_parser(market_id)
         state: dict = {
@@ -187,6 +210,7 @@ def run(args: argparse.Namespace) -> int:
             "resolver": None,     # Supabase yazimi varsa init edilir
             "stats": RunStats(),
             "run_id": None,
+            "last_prices_map": last_prices_map,  # delta mode (None ise full)
         }
         if supabase is not None:
             state["run_id"] = start_scrape_run(
@@ -309,7 +333,9 @@ def run(args: argparse.Namespace) -> int:
             print(
                 f"[mf] {market_id}: run #{state['run_id']} -> {status}  "
                 f"added={stats.products_added} matched={stats.products_matched} "
-                f"prices={stats.prices_added} errors={len(stats.errors)}"
+                f"prices={stats.prices_added} "
+                f"skipped_unchanged={stats.prices_skipped_unchanged} "
+                f"errors={len(stats.errors)}"
             )
             if stats.errors[:3]:
                 for e in stats.errors[:3]:
@@ -367,12 +393,14 @@ def _flush_pending(
         return 0
 
     written = 0
+    last_prices_map = state.get("last_prices_map")
     for idx, item in enumerate(pending):
         product_id = mapping.get(idx)
         try:
             insert_price(
                 writer, product_id, item, run_id,
                 parser.source_label, stats,
+                last_prices_map=last_prices_map,
             )
             insert_campaign(writer, product_id, item, stats)
             written += 1

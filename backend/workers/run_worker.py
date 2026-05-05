@@ -143,6 +143,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="catalog/sitemap bazlı parser'lar için URL sayısı limiti (test)",
     )
     parser.add_argument(
+        "--delta-mode",
+        action="store_true",
+        help=(
+            "Delta sweep: sweep basinda latest_prices snapshot al, "
+            "ayni fiyatli urunler icin INSERT atla. Gunduz refresh icin "
+            "DB writes %80-95 azalir."
+        ),
+    )
+    parser.add_argument(
         "--from-cache",
         action="store_true",
         help=(
@@ -269,6 +278,17 @@ def run(args: argparse.Namespace) -> int:
     stats = RunStats()
     resolver = BulkProductResolver(client, parser.alias_source, stats)
 
+    # Delta mode: sweep basinda latest_prices snapshot al
+    last_prices_map = None
+    if args.delta_mode:
+        from core import fetch_latest_prices_snapshot  # noqa: E402
+        t0 = time.time()
+        last_prices_map = fetch_latest_prices_snapshot(client, [parser.market_id])
+        print(
+            f"[run_worker][delta] snapshot loaded: {len(last_prices_map)} "
+            f"price pairs in {time.time()-t0:.1f}s"
+        )
+
     started = time.time()
     for batch_start in range(0, len(items), RESOLVE_BATCH_SIZE):
         chunk = items[batch_start: batch_start + RESOLVE_BATCH_SIZE]
@@ -278,7 +298,8 @@ def run(args: argparse.Namespace) -> int:
             try:
                 product_id = mapping.get(offset)
                 insert_price(writer, product_id, item, run_id,
-                             parser.source_label, stats)
+                             parser.source_label, stats,
+                             last_prices_map=last_prices_map)
                 insert_campaign(writer, product_id, item, stats)
             except requests.HTTPError as error:
                 stats.errors.append(f"item {global_idx}: HTTP {error}")
@@ -320,6 +341,7 @@ def run(args: argparse.Namespace) -> int:
         f"products_added={stats.products_added}, "
         f"products_matched={stats.products_matched}, "
         f"prices_added={stats.prices_added}, "
+        f"prices_skipped_unchanged={stats.prices_skipped_unchanged}, "
         f"campaigns_added={stats.campaigns_added}, "
         f"errors={len(stats.errors)} → status={final_status}"
     )

@@ -22,7 +22,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 
 try:
     import requests
@@ -413,6 +413,7 @@ class RunStats:
     products_added: int = 0
     products_matched: int = 0
     prices_added: int = 0
+    prices_skipped_unchanged: int = 0  # delta mode: ayni fiyat -> INSERT atlandi
     campaigns_added: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -801,6 +802,47 @@ class BulkProductResolver:
         return result
 
 
+def fetch_latest_prices_snapshot(
+    client: SupabaseClient,
+    market_ids: Iterable[str] | None,
+) -> dict[tuple[str, str], float]:
+    """Sweep basinda latest_prices'tan {(product_id, market_id): price} dict
+    yarat. Delta mode'da insert_price bu map'le karsilastirip ayni fiyatli
+    INSERT'leri atlar — DB writes %80-95 azalir.
+
+    PostgREST max-rows 1000 cap'ini bypass etmek icin RPC kullanir
+    (014_get_latest_prices_snapshot.sql).
+    """
+    if not market_ids:
+        return {}
+    market_ids_list = list(market_ids)
+    if not market_ids_list:
+        return {}
+    try:
+        response = client._request(
+            "POST",
+            "rpc/get_latest_prices_for_markets",
+            json={"p_market_ids": market_ids_list},
+        )
+        rows = response.json() or []
+    except Exception as err:
+        # Delta mode best-effort: snapshot fail olursa full mode'a duser
+        # (caller None map ile devam eder).
+        print(f"[snapshot] fetch failed: {err}", file=sys.stderr)
+        return {}
+    snapshot: dict[tuple[str, str], float] = {}
+    for r in rows:
+        pid = r.get("product_id")
+        mid = r.get("market_id")
+        price = r.get("price")
+        if pid and mid is not None and price is not None:
+            try:
+                snapshot[(str(pid), str(mid))] = float(price)
+            except (TypeError, ValueError):
+                pass
+    return snapshot
+
+
 def insert_price(
     inserter: "SupabaseClient | BulkWriter",
     product_id: str | None,
@@ -808,11 +850,27 @@ def insert_price(
     run_id: int,
     source_label: str,
     stats: RunStats,
+    *,
+    last_prices_map: dict[tuple[str, str], float] | None = None,
 ) -> None:
     """Tek fiyat satirini yaz. `inserter` SupabaseClient ise tek POST,
-    BulkWriter ise buffered (flush_size'a ulasinca toplu POST)."""
+    BulkWriter ise buffered (flush_size'a ulasinca toplu POST).
+
+    `last_prices_map` verildiyse delta mode aktif: o (product, market)
+    icin onceki fiyat ayni ise INSERT atlanir (stats.prices_skipped_unchanged
+    artar). Map None ise eski davranis (her sweep'te yaz)."""
     if item.discount_price is None:
         return
+    # Delta mode: ayni fiyat ise atla
+    if last_prices_map is not None and product_id is not None:
+        prev = last_prices_map.get((str(product_id), str(item.market_id)))
+        if prev is not None:
+            try:
+                if abs(prev - float(item.discount_price)) < 0.005:
+                    stats.prices_skipped_unchanged += 1
+                    return
+            except (TypeError, ValueError):
+                pass
     payload = {
         "product_id": product_id,
         "market_id": item.market_id,
