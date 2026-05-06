@@ -616,25 +616,17 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
-        SnackBar(
-          duration: const Duration(seconds: 2),
-          content: Text(
-            isNew
-                ? '\u00DCr\u00FCn al\u0131\u015Fveri\u015F listene eklendi.'
-                : '\u00DCr\u00FCn al\u0131\u015Fveri\u015F listende g\u00FCncellendi.',
+          SnackBar(
+            duration: const Duration(milliseconds: 1200),
+            behavior: SnackBarBehavior.floating,
+            margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+            content: Text(
+              isNew
+                  ? '✓ Listene eklendi'
+                  : '✓ Listede güncellendi',
+            ),
           ),
-          action: SnackBarAction(
-            label: 'Liste',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => const MarketShoppingListScreen(),
-                ),
-              );
-            },
-          ),
-        ),
-      );
+        );
     } catch (error) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
