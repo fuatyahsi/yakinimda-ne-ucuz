@@ -2195,23 +2195,9 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
           : 'No reliable official match was found';
     }
 
-    // Fallback: bro•r verileri aras•nda •r•n ad• + gramaj e•le•tirmesi
-    if (marketMatches.isEmpty) {
-      final scanResult = provider.lastActuellerScanResult;
-      final allCatalog = scanResult?.catalogItems ?? [];
-      if (allCatalog.isNotEmpty) {
-        final brochureMatches = _buildBrochureCompareEntries(
-          base: item,
-          allItems: allCatalog,
-        );
-        if (brochureMatches.isNotEmpty) {
-          marketMatches = brochureMatches;
-          comparisonSourceLabel = isTr
-              ? 'Bro\u015F\u00FCr verisi kar\u015F\u0131la\u015Ft\u0131rmas\u0131'
-              : 'Brochure data comparison';
-        }
-      }
-    }
+    // Brosur fallback kaldirildi: alakasiz urun eslesmelerini onlemek icin
+    // sadece resmi market verisi (sourceProductId match) gosteriliyor.
+    // Bos sonuc -> kullanicinin tikladigi tek item gozukur.
 
     if (!context.mounted) return;
 
@@ -2510,95 +2496,6 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
     }
 
     return bestByMarket.values.map((match) => match.item).toList()
-      ..sort((a, b) => a.price.compareTo(b.price));
-  }
-
-  List<_CompareEntry> _buildBrochureCompareEntries({
-    required ActuellerCatalogItem base,
-    required List<ActuellerCatalogItem> allItems,
-  }) {
-    final baseMarketId =
-        normalizeMarketId(base.marketName) ?? base.marketName.toLowerCase();
-    final baseCoreTokens = _extractProductCoreNameTokens(base);
-    final baseMeasure = _parseComparableMeasure(base);
-
-    if (baseCoreTokens.isEmpty) return [];
-
-    final bestByMarket = <String, ({ActuellerCatalogItem item, int score})>{};
-
-    for (final candidate in allItems) {
-      if (candidate.id == base.id) continue;
-
-      final candidateMarketId = normalizeMarketId(candidate.marketName) ??
-          candidate.marketName.toLowerCase();
-      if (candidateMarketId == baseMarketId) continue;
-
-      // Measure must be compatible (exact or close)
-      final candidateMeasure = _parseComparableMeasure(candidate);
-      final measCompat =
-          _measureCompatibility(base: base, candidate: candidate);
-      if (measCompat == _MeasureCompatibility.mismatch) continue;
-
-      // Core product name tokens (without brand & stop words) must overlap enough
-      final candidateCoreTokens = _extractProductCoreNameTokens(candidate);
-      if (candidateCoreTokens.isEmpty) continue;
-
-      final coreOverlap = baseCoreTokens.intersection(candidateCoreTokens);
-      final distinctiveOverlap = coreOverlap
-          .where((token) => !_genericBrochureCoreTokens.contains(token))
-          .toSet();
-      final minCoreCount = baseCoreTokens.length < candidateCoreTokens.length
-          ? baseCoreTokens.length
-          : candidateCoreTokens.length;
-
-      // Need at least 1 distinctive token + same measure, or 2+ core token matches
-      final sameMeasure = measCompat == _MeasureCompatibility.exact ||
-          measCompat == _MeasureCompatibility.close;
-      final hasMeasure = baseMeasure != null && candidateMeasure != null;
-
-      if (coreOverlap.isEmpty) continue;
-
-      final bool acceptable;
-      if (hasMeasure && sameMeasure && distinctiveOverlap.isNotEmpty) {
-        acceptable = true;
-      } else if (coreOverlap.length >= 2 && minCoreCount <= 3) {
-        acceptable = true;
-      } else if (coreOverlap.length >= 2 &&
-          coreOverlap.length / minCoreCount >= 0.6) {
-        acceptable = true;
-      } else {
-        acceptable = false;
-      }
-
-      if (!acceptable) continue;
-
-      var score = coreOverlap.length * 10;
-      if (sameMeasure) score += 20;
-      if (hasMeasure && measCompat == _MeasureCompatibility.exact) {
-        score += 10;
-      }
-      if (candidate.category == base.category) score += 6;
-
-      final previous = bestByMarket[candidateMarketId];
-      if (previous == null ||
-          score > previous.score ||
-          (score == previous.score && candidate.price < previous.item.price)) {
-        bestByMarket[candidateMarketId] = (item: candidate, score: score);
-      }
-    }
-
-    return bestByMarket.values
-        .map(
-          (match) => _CompareEntry(
-            item: match.item,
-            marketName: match.item.marketName,
-            productTitle: match.item.productTitle,
-            price: match.item.price,
-            weight: match.item.weight,
-            isCurrent: false,
-          ),
-        )
-        .toList()
       ..sort((a, b) => a.price.compareTo(b.price));
   }
 
