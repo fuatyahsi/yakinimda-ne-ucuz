@@ -255,5 +255,7 @@ END $$;
 
 -- ─────────────────────────────────────────────────────────────────────
 -- 5) latest_prices materialized view refresh
+--    CONCURRENTLY kaldirildi — MV'de unique index yok, plain REFRESH
+--    kullaniyoruz. Kisa suren read-lock alir, kullanicilar etkilenmez.
 -- ─────────────────────────────────────────────────────────────────────
-REFRESH MATERIALIZED VIEW CONCURRENTLY latest_prices;
+REFRESH MATERIALIZED VIEW latest_prices;
