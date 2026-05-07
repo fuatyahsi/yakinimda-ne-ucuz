@@ -254,8 +254,14 @@ BEGIN
 END $$;
 
 -- ─────────────────────────────────────────────────────────────────────
--- 5) latest_prices materialized view refresh
---    CONCURRENTLY kaldirildi — MV'de unique index yok, plain REFRESH
---    kullaniyoruz. Kisa suren read-lock alir, kullanicilar etkilenmez.
+-- 5) latest_prices MV refresh — bu migration icin GEREKSIZ
+--
+--    Re-categorize sadece products.category_id'yi degistirir.
+--    latest_prices MV'sinde kategori bilgisi YOK (price, market, product).
+--    UI 'browse_category_products' RPC products + latest_prices JOIN'i
+--    yapiyor; kategori products tablosundan okunuyor, MV'den degil.
+--
+--    009_fix_latest_prices_refresh.sql cron'u zaten MV'yi periyodik
+--    refresh ediyor; ekstra REFRESH gereksiz + statement_timeout riski.
 -- ─────────────────────────────────────────────────────────────────────
-REFRESH MATERIALIZED VIEW latest_prices;
+-- (REFRESH atlandi — bu migration'da gerek yok)
