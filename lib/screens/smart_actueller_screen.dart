@@ -13,6 +13,8 @@ import '../utils/app_theme.dart';
 import '../utils/market_registry.dart';
 import '../utils/product_category.dart';
 import '../utils/text_repair.dart';
+import '../widgets/market_comparison_sheet.dart';
+import '../widgets/product_icon.dart';
 
 const _officialMarketEmojiById = <String, String>{
   'a101': '🟡',
@@ -2158,221 +2160,34 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
     required bool isTr,
   }) async {
     final provider = context.read<AppProvider>();
-    var comparisonSourceLabel = isTr
-        ? 'Yaln\u0131zca g\u00FCvenilir ayn\u0131 \u00FCr\u00FCn e\u015Fle\u015Fmeleri g\u00F6sterilir'
-        : 'Only reliable same-product matches are shown';
-    var marketMatches = <_CompareEntry>[];
-    var officialLookupCompleted = false;
 
+    var alternatives = <ActuellerCatalogItem>[];
     if (item.sourceProductId != null && provider.marketFiyatiSession != null) {
       try {
         final officialItems = await provider.fetchOfficialSimilarProducts(item);
-        officialLookupCompleted = true;
-        marketMatches = _buildOfficialCompareEntries(
+        final filtered = _buildOfficialCompareEntries(
           base: item,
           candidates: officialItems,
         );
-        if (marketMatches.isNotEmpty) {
-          comparisonSourceLabel =
-              isTr ? 'Resm\u00EE market verisi' : 'Official market data';
-        }
+        alternatives = filtered
+            .map((entry) => entry.item)
+            .where((alt) => alt.id != item.id)
+            .toList();
       } catch (_) {
-        // Keep the sheet usable even if the official lookup fails.
+        // Sheet acik kalsin; alternatives bos -> sadece tiklanan urun gorunur.
       }
     }
 
-    if (marketMatches.isEmpty && officialLookupCompleted) {
-      comparisonSourceLabel = isTr
-          ? 'Resm\u00EE veride g\u00FCvenilir e\u015Fle\u015Fme bulunamad\u0131'
-          : 'No reliable official match was found';
-    }
-
-    // Brosur fallback kaldirildi: alakasiz urun eslesmelerini onlemek icin
-    // sadece resmi market verisi (sourceProductId match) gosteriliyor.
-    // Bos sonuc -> kullanicinin tikladigi tek item gozukur.
-
     if (!context.mounted) return;
 
-    final allCompareItems = <_CompareEntry>[
-      _CompareEntry(
-        item: item,
-        marketName: item.marketName,
-        productTitle: item.productTitle,
-        price: item.price,
-        weight: item.weight,
-        isCurrent: true,
-      ),
-      ...marketMatches,
-    ];
-
-    final cheapestPrice = allCompareItems
-        .map((entry) => entry.price)
-        .reduce((best, price) => price < best ? price : best);
-
-    final theme = Theme.of(context);
-    await showModalBottomSheet(
+    await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        var selectedShoppingItem = item;
-        return StatefulBuilder(
-          builder: (sheetContext, setSheetState) {
-            final selectedMarketLabel =
-                displayNameForMarket(selectedShoppingItem.marketName)
-                        .trim()
-                        .isNotEmpty
-                    ? displayNameForMarket(selectedShoppingItem.marketName)
-                        .trim()
-                    : repairTurkishText(selectedShoppingItem.marketName).trim();
-            final seededAlternatives = allCompareItems
-                .where((entry) => entry.item.id != selectedShoppingItem.id)
-                .map((entry) => entry.item)
-                .toList();
-
-            return Container(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(sheetContext).size.height * 0.75,
-              ),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surface,
-                borderRadius:
-                    const BorderRadius.vertical(top: Radius.circular(28)),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Center(
-                          child: Container(
-                            width: 40,
-                            height: 5,
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.outlineVariant,
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          isTr
-                              ? 'Market Kar\u015F\u0131la\u015Ft\u0131rma'
-                              : 'Price Comparison',
-                          style: theme.textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          _displayCatalogTitle(item.productTitle, item.weight),
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          comparisonSourceLabel,
-                          style: theme.textTheme.labelMedium?.copyWith(
-                            color: theme.colorScheme.primary,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        SizedBox(
-                          width: double.infinity,
-                          child: FilledButton.icon(
-                            onPressed: () async {
-                              Navigator.of(sheetContext).pop();
-                              await _addItemToShoppingList(
-                                context,
-                                provider: provider,
-                                item: selectedShoppingItem,
-                                seededAlternatives: seededAlternatives,
-                                isTr: isTr,
-                              );
-                            },
-                            icon: const Icon(Icons.playlist_add_rounded),
-                            label: const Text(
-                                'Se\u00E7ti\u011Fim \u00DCr\u00FCn\u00FC Ekle'),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          isTr
-                              ? '\u015Eu an se\u00E7ilen market: $selectedMarketLabel'
-                              : 'Selected store: $selectedMarketLabel',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        if (marketMatches.isNotEmpty) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            isTr
-                                ? 'Listeye eklemek istedi\u011Fin market \u00FCr\u00FCn\u00FCn sat\u0131r\u0131na dokun.'
-                                : 'Tap the store row you want to add to the shopping list.',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 12),
-                      ],
-                    ),
-                  ),
-                  Flexible(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (marketMatches.isEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 20),
-                              child: Text(
-                                isTr
-                                    ? 'Bu \u00FCr\u00FCn i\u00E7in di\u011Fer marketlerde benzer \u00FCr\u00FCn bulunamad\u0131. Daha fazla market se\u00E7ersen kar\u015F\u0131la\u015Ft\u0131rma \u015Fans\u0131n artar.'
-                                    : 'No similar product found in other stores. Selecting more stores improves match chances.',
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: theme.colorScheme.onSurfaceVariant,
-                                  height: 1.4,
-                                ),
-                              ),
-                            )
-                          else
-                            ...allCompareItems.map(
-                              (entry) => _ComparisonRow(
-                                marketName: entry.marketName,
-                                productTitle: entry.productTitle,
-                                price: entry.price,
-                                weight: entry.weight,
-                                isCurrent: entry.isCurrent,
-                                isCheapest: entry.price <= cheapestPrice,
-                                isSelected:
-                                    entry.item.id == selectedShoppingItem.id,
-                                onTap: () {
-                                  setSheetState(() {
-                                    selectedShoppingItem = entry.item;
-                                  });
-                                },
-                                theme: theme,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
+      builder: (_) => MarketComparisonSheet(
+        item: item,
+        alternatives: alternatives,
+      ),
     );
   }
 
@@ -3599,164 +3414,6 @@ class _RecentViewedCard extends StatelessWidget {
       return value.toStringAsFixed(0);
     }
     return value.toStringAsFixed(2).replaceAll('.', ',');
-  }
-}
-
-class _ComparisonRow extends StatelessWidget {
-  final String marketName;
-  final String productTitle;
-  final double price;
-  final String? weight;
-  final bool isCurrent;
-  final bool isCheapest;
-  final bool isSelected;
-  final VoidCallback onTap;
-  final ThemeData theme;
-
-  const _ComparisonRow({
-    required this.marketName,
-    required this.productTitle,
-    required this.price,
-    required this.weight,
-    required this.isCurrent,
-    required this.isCheapest,
-    required this.isSelected,
-    required this.onTap,
-    required this.theme,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final display = displayNameForMarket(marketName);
-    return Container(
-      margin: const EdgeInsets.only(top: 10),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(24),
-          onTap: onTap,
-          child: Ink(
-            width: double.infinity,
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              gradient: isSelected ? AppTheme.heroGradient : null,
-              color: isSelected
-                  ? null
-                  : isCurrent
-                      ? AppTheme.surfaceTint
-                      : Colors.white,
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(
-                color: isSelected
-                    ? Colors.transparent
-                    : AppTheme.primary.withValues(alpha: 0.08),
-                width: 1,
-              ),
-              boxShadow: isSelected ? AppTheme.softShadow : AppTheme.cardShadow,
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        display.isEmpty ? marketName : display,
-                        style: theme.textTheme.labelMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                          color: isSelected
-                              ? Colors.white
-                              : isCheapest
-                                  ? theme.colorScheme.primary
-                                  : theme.colorScheme.onSurface,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        _displayCatalogTitle(productTitle, weight),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: isSelected
-                              ? Colors.white.withValues(alpha: 0.88)
-                              : theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                      if (_shouldShowSeparateWeight(productTitle, weight))
-                        Text(
-                          weight!,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: isSelected
-                                ? Colors.white.withValues(alpha: 0.72)
-                                : theme.colorScheme.onSurfaceVariant
-                                    .withValues(alpha: 0.7),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      '${price.toStringAsFixed(2).replaceAll('.', ',')} TL',
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        color: isSelected
-                            ? Colors.white
-                            : isCheapest
-                                ? theme.colorScheme.primary
-                                : theme.colorScheme.onSurface,
-                      ),
-                    ),
-                    if (isSelected)
-                      Container(
-                        margin: const EdgeInsets.only(top: 4),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.18),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          'Se\u00E7ildi',
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      )
-                    else if (isCheapest)
-                      Container(
-                        margin: const EdgeInsets.only(top: 4),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color:
-                              const Color(0xFF2E7D32).withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          'En ucuz',
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: const Color(0xFF2E7D32),
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
   }
 }
 
@@ -5242,19 +4899,10 @@ class _ShowcaseProductCard extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    gradient: AppTheme.heroGradient,
-                    borderRadius: BorderRadius.circular(14),
-                    boxShadow: AppTheme.softShadow,
-                  ),
-                  child: const Icon(
-                    Icons.shopping_bag_rounded,
-                    color: Colors.white,
-                    size: 20,
-                  ),
+                ProductIcon(
+                  title: item.productTitle,
+                  size: 44,
+                  borderRadius: 14,
                 ),
                 const SizedBox(width: 10),
                 Expanded(
