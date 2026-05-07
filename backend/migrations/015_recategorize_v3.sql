@@ -24,17 +24,17 @@
 -- ─────────────────────────────────────────────────────────────────────
 -- 1) Eksik categories'i ekle
 -- ─────────────────────────────────────────────────────────────────────
-INSERT INTO categories (id, name, parent_id, path, sort_order) VALUES
-  ('meyve',           'Meyve',            'meyve-sebze',  'meyve-sebze/meyve',           1),
-  ('sebze',           'Sebze',            'meyve-sebze',  'meyve-sebze/sebze',           2),
-  ('yesillik',        'Yeşillik',         'meyve-sebze',  'meyve-sebze/yesillik',        3),
-  ('mantar',          'Mantar',           'meyve-sebze',  'meyve-sebze/mantar',          4),
-  ('yumurta',         'Yumurta',          'sut-urunleri', 'sut-urunleri/yumurta',       10),
-  ('tereyagi',        'Tereyağı',         'sut-urunleri', 'sut-urunleri/tereyagi',      11),
-  ('bitkisel-icecek', 'Bitkisel İçecek',  'sut-urunleri', 'sut-urunleri/bitkisel-icecek',12),
-  ('camasir-suyu',    'Çamaşır Suyu',     'temizlik',     'temizlik/camasir-suyu',      20),
-  ('cop-poseti',      'Çöp Poşeti',       'temizlik',     'temizlik/cop-poseti',        21),
-  ('yumusatici',      'Yumuşatıcı',       'temizlik',     'temizlik/yumusatici',        22)
+INSERT INTO categories (id, name_tr, name_en, parent_id, path, sort_order, is_active) VALUES
+  ('meyve',           'Meyve',            'Fruit',           'meyve-sebze',  'meyve-sebze/meyve',           1,  true),
+  ('sebze',           'Sebze',            'Vegetable',       'meyve-sebze',  'meyve-sebze/sebze',           2,  true),
+  ('yesillik',        'Yeşillik',         'Greens',          'meyve-sebze',  'meyve-sebze/yesillik',        3,  true),
+  ('mantar',          'Mantar',           'Mushroom',        'meyve-sebze',  'meyve-sebze/mantar',          4,  true),
+  ('yumurta',         'Yumurta',          'Egg',             'sut-urunleri', 'sut-urunleri/yumurta',       10,  true),
+  ('tereyagi',        'Tereyağı',         'Butter',          'sut-urunleri', 'sut-urunleri/tereyagi',      11,  true),
+  ('bitkisel-icecek', 'Bitkisel İçecek',  'Plant-based Milk','sut-urunleri', 'sut-urunleri/bitkisel-icecek',12, true),
+  ('camasir-suyu',    'Çamaşır Suyu',     'Bleach',          'temizlik',     'temizlik/camasir-suyu',      20,  true),
+  ('cop-poseti',      'Çöp Poşeti',       'Trash Bags',      'temizlik',     'temizlik/cop-poseti',        21,  true),
+  ('yumusatici',      'Yumuşatıcı',       'Fabric Softener', 'temizlik',     'temizlik/yumusatici',        22,  true)
 ON CONFLICT (id) DO NOTHING;
 
 -- ─────────────────────────────────────────────────────────────────────
