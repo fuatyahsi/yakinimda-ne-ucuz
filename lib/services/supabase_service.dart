@@ -21,6 +21,7 @@ class SupabaseService {
   SupabaseService._();
 
   static final SupabaseService instance = SupabaseService._();
+  static const int _rpcPageSize = 1000;
 
   bool _initialized = false;
 
@@ -160,9 +161,23 @@ class SupabaseService {
           : marketIds.toList(),
       'p_limit': limit,
     };
-    final rows =
-        await _client.rpc('browse_category_products', params: params);
-    return _mapRpcRows(rows as List, sourceLabel: 'Supabase');
+    final allRows = <dynamic>[];
+    var from = 0;
+
+    while (from < limit) {
+      final to =
+          from + _rpcPageSize > limit ? limit - 1 : from + _rpcPageSize - 1;
+      final rows = await _client
+          .rpc('browse_category_products', params: params)
+          .range(from, to);
+      final page = rows as List;
+      allRows.addAll(page);
+
+      if (page.length < to - from + 1) break;
+      from += _rpcPageSize;
+    }
+
+    return _mapRpcRows(allRows, sourceLabel: 'Supabase');
   }
 
   // -------------------------------------------------------------------
