@@ -33,6 +33,7 @@ jobs:
       ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
 
     steps:
       - name: Checkout
@@ -58,23 +59,40 @@ jobs:
         # repo'daki gercek test dosyalari (lib/services icin yazildi).
         run: flutter test test/catalog_product_family_test.dart test/cosmetic_source_service_test.dart test/market_fiyati_source_service_test.dart test/product_category_test.dart test/smart_actueller_feed_service_test.dart test/smart_actueller_source_service_test.dart
 
-      - name: Verify Supabase client config
+      - name: Prepare Supabase client config
         shell: bash
         run: |
-          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
-            echo "::error::SUPABASE_URL and SUPABASE_ANON_KEY secrets are required for Android builds."
-            exit 1
+          if [ -z "$SUPABASE_ANON_KEY" ] && [ -n "$SUPABASE_PUBLISHABLE_KEY" ]; then
+            SUPABASE_ANON_KEY="$SUPABASE_PUBLISHABLE_KEY"
           fi
 
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::warning::SUPABASE_URL + SUPABASE_ANON_KEY/SUPABASE_PUBLISHABLE_KEY secrets are required for configured Android APK/AAB builds. Tests will pass, but APK/AAB build steps are skipped."
+            echo "BUILD_ANDROID_APP=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          echo "BUILD_ANDROID_APP=true" >> "$GITHUB_ENV"
+          {
+            echo "SUPABASE_DART_DEFINES<<EOF"
+            echo "--dart-define=SUPABASE_URL=$SUPABASE_URL"
+            echo "--dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
       - name: Build debug APK
+        if: ${{ env.BUILD_ANDROID_APP == 'true' }}
         shell: bash
         run: |
-          flutter build apk --debug \
-            --dart-define=SUPABASE_URL="$SUPABASE_URL" \
-            --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
+          readarray -t DART_DEFINES <<< "$SUPABASE_DART_DEFINES"
+          flutter build apk --debug "${DART_DEFINES[@]}"
+
+      - name: Android app build skipped
+        if: ${{ env.BUILD_ANDROID_APP == 'false' }}
+        run: echo "Android APK/AAB build skipped because Supabase client config secret is missing."
 
       - name: Upload debug APK artifact
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.upload_artifacts == 'true' }}
+        if: ${{ env.BUILD_ANDROID_APP == 'true' && github.event_name == 'workflow_dispatch' && github.event.inputs.upload_artifacts == 'true' }}
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -83,7 +101,7 @@ jobs:
           if-no-files-found: error
 
       - name: Prepare Android release keystore
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' }}
+        if: ${{ env.BUILD_ANDROID_APP == 'true' && env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' }}
         shell: bash
         run: |
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/upload-keystore.jks
@@ -95,23 +113,21 @@ jobs:
           EOF
 
       - name: Build release APK
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' }}
+        if: ${{ env.BUILD_ANDROID_APP == 'true' && env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' }}
         shell: bash
         run: |
-          flutter build apk --release \
-            --dart-define=SUPABASE_URL="$SUPABASE_URL" \
-            --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
+          readarray -t DART_DEFINES <<< "$SUPABASE_DART_DEFINES"
+          flutter build apk --release "${DART_DEFINES[@]}"
 
       - name: Build release AAB
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' }}
+        if: ${{ env.BUILD_ANDROID_APP == 'true' && env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' }}
         shell: bash
         run: |
-          flutter build appbundle --release \
-            --dart-define=SUPABASE_URL="$SUPABASE_URL" \
-            --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
+          readarray -t DART_DEFINES <<< "$SUPABASE_DART_DEFINES"
+          flutter build appbundle --release "${DART_DEFINES[@]}"
 
       - name: Upload release APK artifact
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' && github.event_name == 'workflow_dispatch' && github.event.inputs.upload_artifacts == 'true' }}
+        if: ${{ env.BUILD_ANDROID_APP == 'true' && env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' && github.event_name == 'workflow_dispatch' && github.event.inputs.upload_artifacts == 'true' }}
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -120,7 +136,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload release AAB artifact
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' && github.event_name == 'workflow_dispatch' && github.event.inputs.upload_artifacts == 'true' }}
+        if: ${{ env.BUILD_ANDROID_APP == 'true' && env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' && github.event_name == 'workflow_dispatch' && github.event.inputs.upload_artifacts == 'true' }}
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
@@ -129,5 +145,5 @@ jobs:
           if-no-files-found: error
 
       - name: Release signing not configured
-        if: ${{ !(env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '') }}
+        if: ${{ env.BUILD_ANDROID_APP == 'true' && !(env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '') }}
         run: echo "Release APK/AAB skipped because Android signing secrets are not configured."
