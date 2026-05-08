@@ -16,6 +16,7 @@ import '../services/market_fiyati_source_service.dart';
 import '../services/price_history_service.dart';
 import '../services/price_watch_service.dart';
 import '../services/supabase_service.dart';
+import '../utils/catalog_product_family.dart';
 import '../utils/market_registry.dart';
 import '../utils/text_repair.dart';
 
@@ -656,9 +657,7 @@ class AppProvider extends ChangeNotifier {
     // secimden 5'e dusuyordu. Artik kullanicinin backend'den secimlerinin
     // aynen kaydedilmesini istiyoruz — ürün datasi zaten latest_prices'tan
     // geliyor, marketfiyati konum listesiyle kisitlamanin anlami yok.
-    final normalizedMarkets = normalizeMarketIds(marketIds)
-        .toSet()
-        .toList()
+    final normalizedMarkets = normalizeMarketIds(marketIds).toSet().toList()
       ..sort();
     final previousMarkets = normalizeMarketIds(_preferences.preferredMarkets)
         .toSet()
@@ -858,18 +857,16 @@ class AppProvider extends ChangeNotifier {
       // pool'unu daha verimli kullaniyor.
       // Per-call timeout 25s + bir defalik retry: transient slowdown'lara
       // karsi defansif. Limit 1000 -> 500 (server-side query yarisi).
-      Future<List<ActuellerCatalogItem>> _fetchCategory(
+      Future<List<ActuellerCatalogItem>> fetchCategory(
           String categoryId) async {
         Object? lastErr;
         for (var attempt = 0; attempt < 2; attempt++) {
           try {
-            return await SupabaseService.instance
-                .browseCategoryItems(
-                  categoryIds: [categoryId],
-                  marketIds: marketIds,
-                  limit: 3000,
-                )
-                .timeout(const Duration(seconds: 45));
+            return await SupabaseService.instance.browseCategoryItems(
+              categoryIds: [categoryId],
+              marketIds: marketIds,
+              limit: 3000,
+            ).timeout(const Duration(seconds: 45));
           } catch (err) {
             lastErr = err;
             if (attempt == 0) {
@@ -884,7 +881,7 @@ class AppProvider extends ChangeNotifier {
       }
 
       final fetched = await Future.wait(
-        rootCategoryIds.map(_fetchCategory),
+        rootCategoryIds.map(fetchCategory),
         eagerError: false,
       );
 
@@ -957,10 +954,12 @@ class AppProvider extends ChangeNotifier {
           limit: 3000,
         );
         if (backendResults.isNotEmpty) {
+          final displayResults =
+              groupCatalogItemsByProductFamily(backendResults);
           final cacheKey = 'browse::supabase::'
               '${_preferences.preferredMarkets.join(',')}::$categoryId';
           _officialCatalogCache[cacheKey] =
-              List<ActuellerCatalogItem>.unmodifiable(backendResults);
+              List<ActuellerCatalogItem>.unmodifiable(displayResults);
           return _officialCatalogCache[cacheKey]!;
         }
       } catch (err) {
@@ -1016,8 +1015,10 @@ class AppProvider extends ChangeNotifier {
       }
     }
 
-    final normalizedItems = _normalizeOfficialCatalogItems(
-      uniqueItems.values.toList(growable: false),
+    final normalizedItems = groupCatalogItemsByProductFamily(
+      _normalizeOfficialCatalogItems(
+        uniqueItems.values.toList(growable: false),
+      ),
     );
     _officialCatalogCache[cacheKey] =
         List<ActuellerCatalogItem>.unmodifiable(normalizedItems);
@@ -1039,15 +1040,18 @@ class AppProvider extends ChangeNotifier {
     // marketfiyati.org.tr fallback'i denenir.
     if (SupabaseService.instance.isReady) {
       try {
-        final backendResults = await SupabaseService.instance.searchCatalogItems(
+        final backendResults =
+            await SupabaseService.instance.searchCatalogItems(
           query: repairedQuery,
           marketIds: _preferences.preferredMarkets,
         );
         if (backendResults.isNotEmpty) {
+          final displayResults =
+              groupCatalogItemsByProductFamily(backendResults);
           final cacheKey = 'search::supabase::'
               '${_preferences.preferredMarkets.join(',')}::$repairedQuery';
           _officialCatalogCache[cacheKey] =
-              List<ActuellerCatalogItem>.unmodifiable(backendResults);
+              List<ActuellerCatalogItem>.unmodifiable(displayResults);
           return _officialCatalogCache[cacheKey]!;
         }
       } catch (err) {
@@ -1131,8 +1135,10 @@ class AppProvider extends ChangeNotifier {
       }
     }
 
-    final normalizedItems = _normalizeOfficialCatalogItems(
-      uniqueItems.values.toList(growable: false),
+    final normalizedItems = groupCatalogItemsByProductFamily(
+      _normalizeOfficialCatalogItems(
+        uniqueItems.values.toList(growable: false),
+      ),
     );
     _officialCatalogCache[cacheKey] =
         List<ActuellerCatalogItem>.unmodifiable(normalizedItems);
@@ -1148,22 +1154,49 @@ class AppProvider extends ChangeNotifier {
     // kendi ID'si olur (kisa). UUID ise exact match (RPC), aksi halde
     // text search'e dus.
     if (SupabaseService.instance.isReady) {
+      final merged = <ActuellerCatalogItem>[];
       final pid = item.sourceProductId;
       if (pid != null && pid.length == 36) {
         try {
-          final exact = await SupabaseService.instance
-              .fetchProductAcrossMarkets(
+          final exact =
+              await SupabaseService.instance.fetchProductAcrossMarkets(
             productId: pid,
             marketIds: _preferences.preferredMarkets.isEmpty
                 ? null
                 : _preferences.preferredMarkets,
           );
           if (exact.isNotEmpty) {
-            return exact;
+            merged.addAll(exact.where((candidate) {
+              return sameCatalogProductFamily(item, candidate);
+            }));
           }
         } catch (err) {
           debugPrint('[fetchOfficialSimilarProducts] exact failed: $err');
         }
+      }
+
+      try {
+        final query = catalogProductFamilySearchQuery(item);
+        if (query.trim().isNotEmpty) {
+          final familyResults =
+              await SupabaseService.instance.searchCatalogItems(
+            query: query,
+            marketIds: _preferences.preferredMarkets.isEmpty
+                ? null
+                : _preferences.preferredMarkets,
+            limit: 240,
+          );
+          merged.addAll(familyResults.where((candidate) {
+            return sameCatalogProductFamily(item, candidate);
+          }));
+        }
+      } catch (err) {
+        debugPrint('[fetchOfficialSimilarProducts] family search failed: $err');
+      }
+
+      if (merged.isNotEmpty) {
+        return dedupeCatalogItemsById(merged)
+          ..sort((a, b) => a.price.compareTo(b.price));
       }
     }
 
@@ -1210,12 +1243,13 @@ class AppProvider extends ChangeNotifier {
     List<ActuellerCatalogItem> alternatives = const [],
   }) async {
     final identityKey = _shoppingIdentityForItem(item);
+    final compatibleIdentityKeys = catalogShoppingIdentityKeys(item);
     final dedupedAlternatives = _dedupeAlternativeItems(
       item,
       alternatives,
     );
     final existingIndex = _shoppingListEntries.indexWhere(
-      (entry) => entry.identityKey == identityKey,
+      (entry) => compatibleIdentityKeys.contains(entry.identityKey),
     );
     final entryId = existingIndex >= 0
         ? _shoppingListEntries[existingIndex].id
@@ -1772,15 +1806,18 @@ class AppProvider extends ChangeNotifier {
     List<ActuellerCatalogItem> catalogItems, {
     required DateTime syncedAt,
   }) async {
-    final normalizedItems = _normalizeOfficialCatalogItems(catalogItems);
+    final normalizedItems = groupCatalogItemsByProductFamily(
+      _normalizeOfficialCatalogItems(catalogItems),
+    );
     final sortedItems = [...normalizedItems]..sort((a, b) {
         final categoryCompare = (a.sourceMenuCategory ?? '').compareTo(
           b.sourceMenuCategory ?? '',
         );
         if (categoryCompare != 0) return categoryCompare;
-        final marketCompare = a.marketName.compareTo(b.marketName);
-        if (marketCompare != 0) return marketCompare;
-        return a.productTitle.compareTo(b.productTitle);
+        final titleCompare = catalogProductFamilyTitle(a)
+            .compareTo(catalogProductFamilyTitle(b));
+        if (titleCompare != 0) return titleCompare;
+        return a.price.compareTo(b.price);
       });
 
     _lastActuellerScanResult = ActuellerScanResult(
@@ -1915,11 +1952,7 @@ class AppProvider extends ChangeNotifier {
   }
 
   String _shoppingIdentityForItem(ActuellerCatalogItem item) {
-    final productId = item.sourceProductId;
-    if (productId != null && productId.trim().isNotEmpty) {
-      return productId.trim();
-    }
-    return _normalizeShoppingKey(item.productTitle);
+    return catalogProductFamilyKey(item);
   }
 
   String _normalizeShoppingKey(String value) {

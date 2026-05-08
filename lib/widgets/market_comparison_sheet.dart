@@ -6,6 +6,7 @@ import '../models/smart_actueller.dart';
 import '../providers/app_provider.dart';
 import '../services/price_history_service.dart';
 import '../utils/app_theme.dart';
+import '../utils/catalog_product_family.dart';
 import '../utils/market_registry.dart';
 import '../utils/text_repair.dart';
 import 'price_history_chart.dart';
@@ -57,7 +58,7 @@ class MarketComparisonSheet extends StatefulWidget {
 }
 
 class _MarketComparisonSheetState extends State<MarketComparisonSheet> {
-  late String _selectedMarketId;
+  late String _selectedItemId;
   bool _showHistory = false;
   bool _loadingHistory = false;
   ProductPriceHistory? _history;
@@ -65,14 +66,11 @@ class _MarketComparisonSheetState extends State<MarketComparisonSheet> {
   @override
   void initState() {
     super.initState();
-    _selectedMarketId =
-        normalizeMarketId(widget.item.marketName) ??
-            widget.item.marketName.toLowerCase();
+    _selectedItemId = widget.item.id;
   }
 
-  List<ActuellerCatalogItem> get _all =>
-      [widget.item, ...widget.alternatives]
-        ..sort((a, b) => a.price.compareTo(b.price));
+  List<ActuellerCatalogItem> get _all => [widget.item, ...widget.alternatives]
+    ..sort((a, b) => a.price.compareTo(b.price));
 
   ActuellerCatalogItem get _cheapest => _all.first;
 
@@ -101,17 +99,14 @@ class _MarketComparisonSheetState extends State<MarketComparisonSheet> {
 
   Future<void> _addToList(AppProvider provider) async {
     final selected = _all.firstWhere(
-      (i) =>
-          (normalizeMarketId(i.marketName) ?? i.marketName.toLowerCase()) ==
-          _selectedMarketId,
+      (i) => i.id == _selectedItemId,
       orElse: () => widget.item,
     );
 
     try {
       final isNew = await provider.addShoppingListEntry(
         selected,
-        alternatives:
-            _all.where((i) => i != selected).toList(),
+        alternatives: _all.where((i) => i != selected).toList(),
       );
       if (!mounted) return;
       Navigator.of(context).pop();
@@ -123,9 +118,7 @@ class _MarketComparisonSheetState extends State<MarketComparisonSheet> {
             behavior: SnackBarBehavior.floating,
             margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
             content: Text(
-              isNew
-                  ? '✓ Listene eklendi'
-                  : '✓ Listede güncellendi',
+              isNew ? '✓ Listene eklendi' : '✓ Listede güncellendi',
             ),
           ),
         );
@@ -142,18 +135,10 @@ class _MarketComparisonSheetState extends State<MarketComparisonSheet> {
     final provider = context.watch<AppProvider>();
     final all = _all;
 
-    final inList = provider.shoppingListEntries.any((entry) {
-      final pid = widget.item.sourceProductId;
-      if (pid != null && pid.isNotEmpty) {
-        return entry.identityKey.contains(pid);
-      }
-      return entry.identityKey.contains(
-        widget.item.productTitle
-            .toLowerCase()
-            .replaceAll(RegExp(r'\s+'), '_')
-            .substring(0, widget.item.productTitle.length.clamp(0, 20)),
-      );
-    });
+    final familyKeys = catalogShoppingIdentityKeys(widget.item);
+    final inList = provider.shoppingListEntries.any(
+      (entry) => familyKeys.contains(entry.identityKey),
+    );
 
     return FractionallySizedBox(
       heightFactor: 0.92,
@@ -185,7 +170,11 @@ class _MarketComparisonSheetState extends State<MarketComparisonSheet> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // ── Hero ──────────────────────────────────────
-                    _HeroCard(item: widget.item, cheapest: _cheapest, count: all.length),
+                    _HeroCard(
+                      item: widget.item,
+                      cheapest: _cheapest,
+                      count: all.length,
+                    ),
                     const SizedBox(height: 18),
 
                     Text(
@@ -210,9 +199,9 @@ class _MarketComparisonSheetState extends State<MarketComparisonSheet> {
                           item: itm,
                           marketId: mid,
                           isCheapest: i == 0,
-                          isSelected: mid == _selectedMarketId,
+                          isSelected: itm.id == _selectedItemId,
                           priceDiff: i == 0 ? null : diff,
-                          onTap: () => setState(() => _selectedMarketId = mid),
+                          onTap: () => setState(() => _selectedItemId = itm.id),
                         ),
                       );
                     }),
@@ -249,6 +238,7 @@ class _MarketComparisonSheetState extends State<MarketComparisonSheet> {
                                         .map((i) =>
                                             normalizeMarketId(i.marketName) ??
                                             i.marketName.toLowerCase())
+                                        .toSet()
                                         .toList(),
                                   ),
                       ),
@@ -263,7 +253,8 @@ class _MarketComparisonSheetState extends State<MarketComparisonSheet> {
                       child: inList
                           ? OutlinedButton.icon(
                               onPressed: () => _addToList(provider),
-                              icon: const Icon(Icons.check_circle_outline_rounded),
+                              icon: const Icon(
+                                  Icons.check_circle_outline_rounded),
                               label: const Text('Listede — Güncelle'),
                             )
                           : FilledButton.icon(
@@ -301,6 +292,7 @@ class _HeroCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final familyTitle = catalogProductFamilyTitle(item);
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -321,7 +313,7 @@ class _HeroCard extends StatelessWidget {
             ),
             alignment: Alignment.center,
             child: Text(
-              ProductIconResolver.resolve(item.productTitle).emoji,
+              ProductIconResolver.resolve(familyTitle).emoji,
               style: const TextStyle(fontSize: 34),
             ),
           ),
@@ -340,7 +332,7 @@ class _HeroCard extends StatelessWidget {
                   ),
                 const SizedBox(height: 4),
                 Text(
-                  repairTurkishText(item.productTitle),
+                  repairTurkishText(familyTitle),
                   style: theme.textTheme.titleMedium?.copyWith(
                     color: Colors.white,
                     fontWeight: FontWeight.w900,
@@ -353,8 +345,9 @@ class _HeroCard extends StatelessWidget {
                   runSpacing: 6,
                   children: [
                     _HeroPill(
-                        label: 'En ucuz: ${cheapest.price.toStringAsFixed(2)} TL'),
-                    _HeroPill(label: '$count market'),
+                        label:
+                            'En ucuz: ${cheapest.price.toStringAsFixed(2)} TL'),
+                    _HeroPill(label: '$count se\u00E7enek'),
                   ],
                 ),
               ],
@@ -410,6 +403,7 @@ class _PriceRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final variantLabel = catalogVariantLabel(item);
     final emoji = _kMarketEmoji[marketId] ?? '🏪';
 
     return GestureDetector(
@@ -437,9 +431,8 @@ class _PriceRow extends StatelessWidget {
               height: 44,
               decoration: BoxDecoration(
                 gradient: isCheapest ? AppTheme.heroGradient : null,
-                color: isCheapest
-                    ? null
-                    : AppTheme.primary.withValues(alpha: 0.1),
+                color:
+                    isCheapest ? null : AppTheme.primary.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(16),
               ),
               alignment: Alignment.center,
@@ -458,6 +451,18 @@ class _PriceRow extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 2),
+                  if (variantLabel.isNotEmpty) ...[
+                    Text(
+                      variantLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: AppTheme.inkSoft,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                  ],
                   Text(
                     isCheapest
                         ? '✓ En ucuz seçenek'
@@ -510,8 +515,7 @@ class _HistoryToggle extends StatelessWidget {
     return GestureDetector(
       onTap: onToggle,
       child: Container(
-        padding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
           color: AppTheme.primary.withValues(alpha: 0.05),
           borderRadius: BorderRadius.circular(18),
@@ -551,7 +555,8 @@ class _NoHistoryState extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 20),
       child: Column(
         children: [
-          const Icon(Icons.bar_chart_rounded, size: 42, color: AppTheme.inkSoft),
+          const Icon(Icons.bar_chart_rounded,
+              size: 42, color: AppTheme.inkSoft),
           const SizedBox(height: 10),
           Text(
             'Bu ürün için henüz fiyat geçmişi yok.',

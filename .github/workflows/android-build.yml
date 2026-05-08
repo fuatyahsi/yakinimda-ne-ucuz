@@ -31,6 +31,8 @@ jobs:
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
       ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
 
     steps:
       - name: Checkout
@@ -54,10 +56,22 @@ jobs:
       - name: Run tests
         # Eski FridgeChef projesinden kalan test isimlerinin yerine bu
         # repo'daki gercek test dosyalari (lib/services icin yazildi).
-        run: flutter test test/cosmetic_source_service_test.dart test/market_fiyati_source_service_test.dart test/product_category_test.dart test/smart_actueller_feed_service_test.dart test/smart_actueller_source_service_test.dart
+        run: flutter test test/catalog_product_family_test.dart test/cosmetic_source_service_test.dart test/market_fiyati_source_service_test.dart test/product_category_test.dart test/smart_actueller_feed_service_test.dart test/smart_actueller_source_service_test.dart
+
+      - name: Verify Supabase client config
+        shell: bash
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::error::SUPABASE_URL and SUPABASE_ANON_KEY secrets are required for Android builds."
+            exit 1
+          fi
 
       - name: Build debug APK
-        run: flutter build apk --debug
+        shell: bash
+        run: |
+          flutter build apk --debug \
+            --dart-define=SUPABASE_URL="$SUPABASE_URL" \
+            --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
 
       - name: Upload debug APK artifact
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.upload_artifacts == 'true' }}
@@ -82,11 +96,19 @@ jobs:
 
       - name: Build release APK
         if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' }}
-        run: flutter build apk --release
+        shell: bash
+        run: |
+          flutter build apk --release \
+            --dart-define=SUPABASE_URL="$SUPABASE_URL" \
+            --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
 
       - name: Build release AAB
         if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' }}
-        run: flutter build appbundle --release
+        shell: bash
+        run: |
+          flutter build appbundle --release \
+            --dart-define=SUPABASE_URL="$SUPABASE_URL" \
+            --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY"
 
       - name: Upload release APK artifact
         if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_KEY_ALIAS != '' && env.ANDROID_KEY_PASSWORD != '' && env.ANDROID_STORE_PASSWORD != '' && github.event_name == 'workflow_dispatch' && github.event.inputs.upload_artifacts == 'true' }}

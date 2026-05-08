@@ -10,6 +10,7 @@ import '../providers/app_provider.dart';
 import '../models/supabase_market.dart';
 import '../services/supabase_service.dart';
 import '../utils/app_theme.dart';
+import '../utils/catalog_product_family.dart';
 import '../utils/market_registry.dart';
 import '../utils/product_category.dart';
 import '../utils/text_repair.dart';
@@ -158,11 +159,11 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
   }
 
   void _rememberViewedItem(ActuellerCatalogItem item) {
-    final identity = item.sourceProductId ?? item.id;
+    final identity = catalogProductFamilyKey(item);
     final updated = [
       item,
       ..._recentViewedItems.where(
-        (candidate) => (candidate.sourceProductId ?? candidate.id) != identity,
+        (candidate) => catalogProductFamilyKey(candidate) != identity,
       ),
     ].take(6).toList();
 
@@ -321,8 +322,7 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
             : provider.marketFiyatiAvailableMarketIds.toSet();
         final prefsRaw =
             provider.smartKitchenPreferences.preferredMarkets.toSet();
-        var initialSelectedIds =
-            prefsRaw.where(selectableIds.contains).toSet();
+        var initialSelectedIds = prefsRaw.where(selectableIds.contains).toSet();
         // Eski registry ID'leri (ornegin 'kooperatif' -> backend'de
         // 'tarim-kredi') uyusmadigi durumu migration sayiyoruz: kullanici
         // prefs kaydetmis ama bir kismi backend'de yok. Bu durumda tier 1+2
@@ -623,9 +623,7 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
             behavior: SnackBarBehavior.floating,
             margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
             content: Text(
-              isNew
-                  ? '✓ Listene eklendi'
-                  : '✓ Listede güncellendi',
+              isNew ? '✓ Listene eklendi' : '✓ Listede güncellendi',
             ),
           ),
         );
@@ -669,26 +667,13 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
     AppProvider provider,
     ActuellerCatalogItem item,
   ) {
-    final identityKey = _shoppingIdentityForItem(item);
+    final identityKeys = catalogShoppingIdentityKeys(item);
     for (final entry in provider.shoppingListEntries) {
-      if (entry.identityKey == identityKey) {
+      if (identityKeys.contains(entry.identityKey)) {
         return entry;
       }
     }
     return null;
-  }
-
-  String _shoppingIdentityForItem(ActuellerCatalogItem item) {
-    final sourceProductId = item.sourceProductId?.trim();
-    if (sourceProductId != null && sourceProductId.isNotEmpty) {
-      return 'product:$sourceProductId';
-    }
-
-    final marketId = normalizeMarketId(item.marketName) ??
-        item.marketName.toLowerCase().trim();
-    final title = _normalizeCatalogDisplayValue(item.productTitle);
-    final weight = _normalizeCatalogDisplayValue(item.weight ?? '');
-    return 'fallback:$marketId:$title:$weight';
   }
 
   Future<List<ActuellerCatalogItem>> _resolveShoppingListAlternatives(
@@ -716,7 +701,7 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
       mergeItems(seededAlternatives);
     }
 
-    if (item.sourceProductId != null && provider.marketFiyatiSession != null) {
+    if (provider.marketFiyatiSession != null) {
       try {
         final officialItems = await provider.fetchOfficialSimilarProducts(item);
         mergeItems(
@@ -1160,7 +1145,6 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
     final scanResult = provider.lastActuellerScanResult;
     final isCatalogSyncing = provider.isActuellerCatalogSyncing;
     final catalogSyncAt = provider.lastActuellerCatalogSyncAt;
-    final catalogBrochureCount = provider.lastActuellerCatalogBrochureCount;
     final catalogMessage = provider.actuellerCatalogSyncMessage;
     final hasSelectedMarkets =
         provider.smartKitchenPreferences.preferredMarkets.isNotEmpty;
@@ -1194,7 +1178,6 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
       for (final category in displayCategories)
         category.id: _browseCategoryItemCount(category),
     };
-
     return Scaffold(
       backgroundColor: AppTheme.shellBackground,
       appBar: AppBar(
@@ -1296,7 +1279,6 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
                 filteredItems: visibleFilteredItems,
                 displayCategories: displayCategories,
                 displayCategoryCounts: displayCategoryCounts,
-                catalogBrochureCount: catalogBrochureCount,
                 catalogSyncAt: catalogSyncAt,
                 isSyncing: isCatalogSyncing || _isScanning,
                 provider: provider,
@@ -1776,7 +1758,6 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
     required List<ActuellerCatalogItem> filteredItems,
     required List<_MarketBrowseCategory> displayCategories,
     required Map<String, int> displayCategoryCounts,
-    required int catalogBrochureCount,
     required DateTime? catalogSyncAt,
     required bool isSyncing,
     required AppProvider provider,
@@ -1790,13 +1771,14 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
     );
     final activeCategory =
         selectedCategory.isEmpty ? null : selectedCategory.first;
+    final categorySummaryCount = displayCategories.length;
     final summaryLabel = hasActiveProductFilter
         ? (isTr
-            ? '${filteredItems.length}/${allItems.length} \u00FCr\u00FCn \u2022 $catalogBrochureCount kaynak kategori'
-            : '${filteredItems.length}/${allItems.length} items \u2022 $catalogBrochureCount source categories')
+            ? '${filteredItems.length}/${allItems.length} \u00FCr\u00FCn \u2022 $categorySummaryCount kategori'
+            : '${filteredItems.length}/${allItems.length} items \u2022 $categorySummaryCount categories')
         : (isTr
-            ? '${allItems.length} \u00FCr\u00FCn haz\u0131r \u2022 $catalogBrochureCount kaynak kategori'
-            : '${allItems.length} items ready \u2022 $catalogBrochureCount source categories');
+            ? '${allItems.length} \u00FCr\u00FCn haz\u0131r \u2022 $categorySummaryCount kategori'
+            : '${allItems.length} items ready \u2022 $categorySummaryCount categories');
 
     return CustomScrollView(
       slivers: [
@@ -1807,7 +1789,7 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
               isTr: isTr,
               usesOfficialSource: usesOfficialSource,
               totalItems: allItems.length,
-              categoryCount: catalogBrochureCount,
+              categoryCount: categorySummaryCount,
               selectedMarketCount:
                   provider.smartKitchenPreferences.preferredMarkets.length,
               locationLabel: marketFiyatiLocationLabel,
@@ -2162,7 +2144,7 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
     final provider = context.read<AppProvider>();
 
     var alternatives = <ActuellerCatalogItem>[];
-    if (item.sourceProductId != null && provider.marketFiyatiSession != null) {
+    if (provider.marketFiyatiSession != null) {
       try {
         final officialItems = await provider.fetchOfficialSimilarProducts(item);
         final filtered = _buildOfficialCompareEntries(
@@ -2335,16 +2317,16 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
   }) {
     final currentMarketId =
         normalizeMarketId(base.marketName) ?? base.marketName.toLowerCase();
-    final bestByMarket = <String, ({ActuellerCatalogItem item, int score})>{};
+    final bestByItem = <String, ({ActuellerCatalogItem item, int score})>{};
 
     for (final candidate in candidates) {
       final candidateMarketId = normalizeMarketId(candidate.marketName) ??
           candidate.marketName.toLowerCase();
-      if (candidateMarketId == currentMarketId) {
+      if (candidate.id == base.id) {
         continue;
       }
-      if (base.sourceDepotId != null &&
-          candidate.sourceDepotId == base.sourceDepotId) {
+      if (candidateMarketId == currentMarketId &&
+          candidate.sourceProductId == base.sourceProductId) {
         continue;
       }
       final score = _officialCrossMarketMatchScore(
@@ -2355,15 +2337,15 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
         continue;
       }
 
-      final previous = bestByMarket[candidateMarketId];
+      final previous = bestByItem[candidate.id];
       if (previous == null ||
           score > previous.score ||
           (score == previous.score && candidate.price < previous.item.price)) {
-        bestByMarket[candidateMarketId] = (item: candidate, score: score);
+        bestByItem[candidate.id] = (item: candidate, score: score);
       }
     }
 
-    return bestByMarket.values
+    return bestByItem.values
         .map(
           (match) => _CompareEntry(
             item: match.item,
@@ -2417,6 +2399,10 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
         candidate.sourceProductId != null &&
         base.sourceProductId == candidate.sourceProductId) {
       return 100;
+    }
+
+    if (sameCatalogProductFamily(base, candidate)) {
+      return 95 + (genericScore < 0 ? 0 : genericScore);
     }
 
     if (measureCompatibility == _MeasureCompatibility.mismatch) {
@@ -2616,9 +2602,8 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
         .replaceAll('\u015F', 's')
         .replaceAll('\u00FC', 'u');
 
-    final countPackMatch = RegExp(
-            r"(\d+(?:[.,]\d+)?)\s*['•]?(li|lu)\b")
-        .firstMatch(asciiSource);
+    final countPackMatch =
+        RegExp(r"(\d+(?:[.,]\d+)?)\s*['•]?(li|lu)\b").firstMatch(asciiSource);
     if (countPackMatch != null) {
       return _ComparableMeasure(
         kind: _ComparableMeasureKind.count,
@@ -3375,7 +3360,10 @@ class _RecentViewedCard extends StatelessWidget {
               const SizedBox(height: 10),
               Expanded(
                 child: Text(
-                  _displayCatalogTitle(item.productTitle, item.weight),
+                  _displayCatalogTitle(
+                    catalogProductFamilyTitle(item),
+                    item.weight,
+                  ),
                   maxLines: 3,
                   overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.bodyMedium?.copyWith(
@@ -4900,7 +4888,7 @@ class _ShowcaseProductCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 ProductIcon(
-                  title: item.productTitle,
+                  title: catalogProductFamilyTitle(item),
                   size: 44,
                   borderRadius: 14,
                 ),
@@ -4911,7 +4899,10 @@ class _ShowcaseProductCard extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        _displayCatalogTitle(item.productTitle, item.weight),
+                        _displayCatalogTitle(
+                          catalogProductFamilyTitle(item),
+                          item.weight,
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: theme.textTheme.bodyMedium?.copyWith(
