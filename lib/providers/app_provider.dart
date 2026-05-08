@@ -867,9 +867,9 @@ class AppProvider extends ChangeNotifier {
                 .browseCategoryItems(
                   categoryIds: [categoryId],
                   marketIds: marketIds,
-                  limit: 1000,
+                  limit: 3000,
                 )
-                .timeout(const Duration(seconds: 30));
+                .timeout(const Duration(seconds: 45));
           } catch (err) {
             lastErr = err;
             if (attempt == 0) {
