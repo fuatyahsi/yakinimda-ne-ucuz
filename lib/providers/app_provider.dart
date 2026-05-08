@@ -954,6 +954,7 @@ class AppProvider extends ChangeNotifier {
             await SupabaseService.instance.browseCategoryItems(
           categoryIds: [categoryId],
           marketIds: _preferences.preferredMarkets,
+          limit: 3000,
         );
         if (backendResults.isNotEmpty) {
           final cacheKey = 'browse::supabase::'
