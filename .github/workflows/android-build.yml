@@ -57,7 +57,7 @@ jobs:
       - name: Run tests
         # Eski FridgeChef projesinden kalan test isimlerinin yerine bu
         # repo'daki gercek test dosyalari (lib/services icin yazildi).
-        run: flutter test test/catalog_product_family_test.dart test/cosmetic_source_service_test.dart test/market_fiyati_source_service_test.dart test/product_category_test.dart test/smart_actueller_feed_service_test.dart test/smart_actueller_source_service_test.dart
+        run: flutter test test/catalog_product_family_test.dart test/cosmetic_source_service_test.dart test/market_fiyati_source_service_test.dart test/product_category_test.dart test/product_icon_test.dart test/smart_actueller_feed_service_test.dart test/smart_actueller_source_service_test.dart
 
       - name: Prepare Supabase client config
         shell: bash

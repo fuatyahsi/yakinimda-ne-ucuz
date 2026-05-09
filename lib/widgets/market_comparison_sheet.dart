@@ -313,7 +313,11 @@ class _HeroCard extends StatelessWidget {
             ),
             alignment: Alignment.center,
             child: Text(
-              ProductIconResolver.resolve(familyTitle).emoji,
+              ProductIconResolver.resolve(
+                familyTitle,
+                categoryId: item.sourceMenuCategory,
+                category: item.category,
+              ).emoji,
               style: const TextStyle(fontSize: 34),
             ),
           ),

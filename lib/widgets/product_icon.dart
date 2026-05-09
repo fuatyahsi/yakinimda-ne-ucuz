@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../utils/product_category.dart';
+
 /// Ürün adına göre emoji + arka plan rengi döndürür.
 /// ProductCategory enum'u ile uyumlu ek refinement yapılmış.
 ///
@@ -9,19 +11,27 @@ import 'package:flutter/material.dart';
 /// ```
 class ProductIcon extends StatelessWidget {
   final String title;
+  final String? categoryId;
+  final ProductCategory? category;
   final double size;
   final double borderRadius;
 
   const ProductIcon({
     super.key,
     required this.title,
+    this.categoryId,
+    this.category,
     this.size = 52,
     this.borderRadius = 16,
   });
 
   @override
   Widget build(BuildContext context) {
-    final visual = ProductIconResolver.resolve(title);
+    final visual = ProductIconResolver.resolve(
+      title,
+      categoryId: categoryId,
+      category: category,
+    );
     return Container(
       width: size,
       height: size,
@@ -42,12 +52,46 @@ class ProductIcon extends StatelessWidget {
 class ProductIconResolver {
   const ProductIconResolver._();
 
-  static _ProductVisual resolve(String productTitle) {
+  static ProductVisual resolve(
+    String productTitle, {
+    String? categoryId,
+    ProductCategory? category,
+  }) {
     final t = _norm(productTitle);
+    final categoryKey = _norm(categoryId ?? '');
+    final frozen = _isFrozen(t, categoryKey);
+
+    if (frozen && _has(t, ['misir']) && !_has(t, ['misir unu', 'misir yagi'])) {
+      return const ProductVisual('\u{1F33D}', Color(0xFFFEF3C7));
+    }
+    if (_has(t, [
+      'orman meyveleri',
+      'bogurtlen',
+      'ahududu',
+      'frambuaz',
+      'yaban mersini',
+      'blueberry',
+      'blackberry',
+      'raspberry',
+    ])) {
+      return const ProductVisual('\u{1F353}', Color(0xFFFCE7F3));
+    }
+    if (_has(t, ['corba', 'ezogelin'])) {
+      return const ProductVisual('\u{1F372}', Color(0xFFFFF7ED));
+    }
+    if (_has(t, ['manti'])) {
+      return const ProductVisual('\u{1F95F}', Color(0xFFFFF7ED));
+    }
 
     // ── Süt & Kahvaltılık ──────────────────────────────────
-    if (_has(t, ['tam yagli sut', 'yari yagli sut', 'suttas', 'pinar sut', 'sek sut', ' sut ']))
-      return const _ProductVisual('🥛', Color(0xFFEFF6FF)); // mavi-beyaz
+    if (_has(t, [
+      'tam yagli sut',
+      'yari yagli sut',
+      'suttas',
+      'pinar sut',
+      'sek sut',
+      ' sut '
+    ])) return const _ProductVisual('🥛', Color(0xFFEFF6FF)); // mavi-beyaz
     if (_has(t, ['ayran']))
       return const _ProductVisual('🥛', Color(0xFFF0FDF4)); // yeşil-beyaz
     if (_has(t, ['kefir']))
@@ -68,7 +112,8 @@ class ProductIconResolver {
       return const _ProductVisual('🥚', Color(0xFFFEF3C7));
 
     // ── Et & Tavuk ─────────────────────────────────────────
-    if (_has(t, ['pilic gogus', 'pilic but', 'piliç', 'pilic', 'tavuk', 'hindi']))
+    if (_has(
+        t, ['pilic gogus', 'pilic but', 'piliç', 'pilic', 'tavuk', 'hindi']))
       return const _ProductVisual('🍗', Color(0xFFFFF7ED));
     if (_has(t, ['dana kiyma', 'kuzu kiyma', 'kiyma']))
       return const _ProductVisual('🥩', Color(0xFFFFE4E6));
@@ -85,9 +130,9 @@ class ProductIconResolver {
     if (_has(t, ['domates']))
       return const _ProductVisual('🍅', Color(0xFFFEE2E2)); // KIRMIZI bg
     if (_has(t, ['elma']))
-      return const _ProductVisual('🍎', Color(0xFFDCFCE7)); // YEŞİL bg — domatesle zıt
-    if (_has(t, ['muz']))
-      return const _ProductVisual('🍌', Color(0xFFFEFCE8));
+      return const _ProductVisual(
+          '🍎', Color(0xFFDCFCE7)); // YEŞİL bg — domatesle zıt
+    if (_has(t, ['muz'])) return const _ProductVisual('🍌', Color(0xFFFEFCE8));
     if (_has(t, ['portakal', 'mandalina']))
       return const _ProductVisual('🍊', Color(0xFFFFEDD5));
     if (_has(t, ['limon']))
@@ -112,6 +157,8 @@ class ProductIconResolver {
       return const _ProductVisual('🍆', Color(0xFFF3E8FF));
     if (_has(t, ['havuc']))
       return const _ProductVisual('🥕', Color(0xFFFFEDD5));
+    if (_has(t, ['misir']) && !_has(t, ['misir unu', 'misir yagi']))
+      return const _ProductVisual('\u{1F33D}', Color(0xFFFEF3C7));
     if (_has(t, ['ispanak', 'marul', 'lahana', 'brokoli', 'karnabahar']))
       return const _ProductVisual('🥦', Color(0xFFDCFCE7));
     if (_has(t, ['mantar']))
@@ -121,7 +168,8 @@ class ProductIconResolver {
 
     // ── Fırın & Ekmek ──────────────────────────────────────
     if (_has(t, ['simit']))
-      return const _ProductVisual('🥯', Color(0xFFFFEDD5)); // amber — ekmekten farklı
+      return const _ProductVisual(
+          '🥯', Color(0xFFFFEDD5)); // amber — ekmekten farklı
     if (_has(t, ['pogaca', 'acma', 'borek']))
       return const _ProductVisual('🥐', Color(0xFFFFF7ED));
     if (_has(t, ['ekmek', 'somun', 'pide', 'lavas', 'tortilla']))
@@ -129,10 +177,12 @@ class ProductIconResolver {
 
     // ── İçecek ────────────────────────────────────────────
     // Kola: kırmızı kutu — KIRMIZI bg ama açık ton
-    if (_has(t, ['coca cola', 'pepsi', 'cola', 'fanta', 'sprite', 'gazoz', 'soda']))
+    if (_has(
+        t, ['coca cola', 'pepsi', 'cola', 'fanta', 'sprite', 'gazoz', 'soda']))
       return const _ProductVisual('🥤', Color(0xFFFEE2E2));
     // Su: şeffaf şişe — MAVİ bg; koladan farklı
-    if (_has(t, [' su ', 'maden suyu', 'dogal kaynak', 'sise su']))
+    if (_hasToken(t, 'su') ||
+        _has(t, ['maden suyu', 'dogal kaynak', 'sise su']))
       return const _ProductVisual('💧', Color(0xFFEFF6FF));
     // Ayran (üstte zaten yakalandı, burada limonata vb.)
     if (_has(t, ['limonata', 'meyve suyu', 'meyve suyu', 'ice tea']))
@@ -143,8 +193,7 @@ class ProductIconResolver {
       return const _ProductVisual('☕', Color(0xFFF5F0EB));
     if (_has(t, ['cay', 'bitki cayi']))
       return const _ProductVisual('🍵', Color(0xFFECFDF5));
-    if (_has(t, ['bira']))
-      return const _ProductVisual('🍺', Color(0xFFFEF9C3));
+    if (_has(t, ['bira'])) return const _ProductVisual('🍺', Color(0xFFFEF9C3));
 
     // ── Temel Gıda ────────────────────────────────────────
     if (_has(t, ['makarna', 'spagetti', 'penne', 'fusilli']))
@@ -159,8 +208,7 @@ class ProductIconResolver {
       return const _ProductVisual('🌾', Color(0xFFFFF7ED));
     if (_has(t, ['seker']))
       return const _ProductVisual('🍬', Color(0xFFFFF0F5));
-    if (_has(t, ['tuz']))
-      return const _ProductVisual('🧂', Color(0xFFF8FAFC));
+    if (_has(t, ['tuz'])) return const _ProductVisual('🧂', Color(0xFFF8FAFC));
     if (_has(t, ['zeytinyagi']))
       return const _ProductVisual('🫙', Color(0xFFECFDF5));
     if (_has(t, ['aycicek yagi', 'sivi yag']))
@@ -188,9 +236,17 @@ class ProductIconResolver {
     if (_has(t, ['dondurma']))
       return const _ProductVisual('🍦', Color(0xFFF0F9FF));
 
+    if (frozen)
+      return const _ProductVisual('\u{2744}\u{FE0F}', Color(0xFFEFF6FF));
+    if (_hasCategory(categoryKey, ['hazir-yemek']))
+      return const _ProductVisual('\u{1F372}', Color(0xFFFFF7ED));
+    if (_hasCategory(categoryKey, ['pizza-hamur']))
+      return const _ProductVisual('\u{1F950}', Color(0xFFFFF7ED));
+
     // ── Temizlik ──────────────────────────────────────────
     // Çamaşır Suyu: camgöbeği bg — deterjan (mor) dan farklı
-    if (_has(t, ['camasir suyu', 'cif', 'javel', 'deterjan suyu']))
+    if (_has(t, ['camasir suyu', 'javel', 'deterjan suyu']) ||
+        _hasToken(t, 'cif'))
       return const _ProductVisual('🫧', Color(0xFFCFFAFE));
     // Sıvı/Toz Deterjan: mor/lavanta bg
     if (_has(t, ['deterjan', 'camasir deterjan', 'bulasik', 'yumusatici']))
@@ -226,6 +282,9 @@ class ProductIconResolver {
     if (_has(t, ['kedi mamas', 'kopek mamas', 'kedi kumu']))
       return const _ProductVisual('🐾', Color(0xFFFFF7ED));
 
+    final categoryVisual = _resolveCategoryFallback(categoryKey, category);
+    if (categoryVisual != null) return categoryVisual;
+
     // ── Fallback ──────────────────────────────────────────
     return const _ProductVisual('🛒', Color(0xFFFFF5F2));
   }
@@ -245,10 +304,93 @@ class ProductIconResolver {
     }
     return false;
   }
+
+  static bool _hasToken(String normalized, String token) {
+    final normalizedToken = RegExp.escape(_norm(token));
+    return RegExp('(^|[^a-z0-9])$normalizedToken([^a-z0-9]|\$)')
+        .hasMatch(normalized);
+  }
+
+  static bool _hasCategory(String categoryKey, List<String> categoryIds) {
+    for (final id in categoryIds) {
+      final normalizedId = _norm(id);
+      if (categoryKey == normalizedId ||
+          categoryKey.startsWith('$normalizedId-')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static bool _isFrozen(String title, String categoryKey) {
+    return _has(title, ['dondurulmus', 'donuk', 'buzlu']) ||
+        _hasCategory(categoryKey, [
+          'dondurulmus',
+          'dondurulmus-sebze',
+          'dondurulmus-et',
+        ]);
+  }
+
+  static ProductVisual? _resolveCategoryFallback(
+    String categoryKey,
+    ProductCategory? category,
+  ) {
+    if (_hasCategory(categoryKey, ['dondurma'])) {
+      return const ProductVisual('\u{1F366}', Color(0xFFF0F9FF));
+    }
+    if (_hasCategory(
+        categoryKey, ['kedi-mama', 'kopek-mama', 'evcil-hayvan'])) {
+      return const ProductVisual('\u{1F43E}', Color(0xFFFFF7ED));
+    }
+    if (_hasCategory(categoryKey, ['ampul'])) {
+      return const ProductVisual('\u{1F4A1}', Color(0xFFFEFCE8));
+    }
+    if (_hasCategory(categoryKey, ['pil-batarya'])) {
+      return const ProductVisual('\u{1F50B}', Color(0xFFF8FAFC));
+    }
+    if (_hasCategory(categoryKey, ['mutfak-esya', 'saklama-kaplari'])) {
+      return const ProductVisual('\u{1F37D}\u{FE0F}', Color(0xFFF8FAFC));
+    }
+    if (_hasCategory(categoryKey, ['tekstil'])) {
+      return const ProductVisual('\u{1F455}', Color(0xFFEFF6FF));
+    }
+    if (_hasCategory(categoryKey, ['kadin-hijyen', 'yetiskin-bezi'])) {
+      return const ProductVisual('\u{1FA79}', Color(0xFFFCE7F3));
+    }
+    if (_hasCategory(categoryKey, [
+      'yuzey-temizleyici',
+      'temizlik',
+      'camasir-deterjan',
+      'bulasik-deterjan',
+      'camasir-suyu',
+    ])) {
+      return const ProductVisual('\u{1F9F4}', Color(0xFFF3E8FF));
+    }
+
+    switch (category) {
+      case ProductCategory.food:
+        return const ProductVisual('\u{1F35D}', Color(0xFFFFF7ED));
+      case ProductCategory.cleaning:
+        return const ProductVisual('\u{1F9F4}', Color(0xFFF3E8FF));
+      case ProductCategory.home:
+        return const ProductVisual('\u{1F3E0}', Color(0xFFF8FAFC));
+      case ProductCategory.electronics:
+        return const ProductVisual('\u{1F4A1}', Color(0xFFFEFCE8));
+      case ProductCategory.clothing:
+        return const ProductVisual('\u{1F455}', Color(0xFFEFF6FF));
+      case ProductCategory.other:
+      case null:
+        return null;
+    }
+  }
 }
 
-class _ProductVisual {
+class ProductVisual {
   final String emoji;
   final Color bg;
-  const _ProductVisual(this.emoji, this.bg);
+  const ProductVisual(this.emoji, this.bg);
+}
+
+class _ProductVisual extends ProductVisual {
+  const _ProductVisual(super.emoji, super.bg);
 }

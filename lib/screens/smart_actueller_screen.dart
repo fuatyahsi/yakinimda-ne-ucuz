@@ -433,7 +433,7 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
                                     markets: backendMarkets,
                                     draftSelectedIds: draftSelectedIds,
                                     locallyAvailableIds: provider
-                                        .marketFiyatiAvailableMarketIds
+                                        .marketFiyatiLocalMarketIds
                                         .toSet(),
                                     enabled: !isSaving,
                                     isTr: isTr,
@@ -4916,6 +4916,8 @@ class _ShowcaseProductCard extends StatelessWidget {
               children: [
                 ProductIcon(
                   title: catalogProductFamilyTitle(item),
+                  categoryId: item.sourceMenuCategory,
+                  category: item.category,
                   size: 44,
                   borderRadius: 14,
                 ),

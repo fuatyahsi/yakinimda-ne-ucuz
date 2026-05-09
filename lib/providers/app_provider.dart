@@ -475,6 +475,12 @@ class AppProvider extends ChangeNotifier {
     return List.unmodifiable(union);
   }
 
+  /// Sadece secili konum icin marketfiyati.org.tr `nearest` cevabinda gelen
+  /// zincirler. UI'daki "konumunda" rozeti bunu kullanir; tum Supabase
+  /// marketlerini secilebilir tutan union getter'i bu rozet icin fazla genis.
+  List<String> get marketFiyatiLocalMarketIds =>
+      List.unmodifiable(_marketFiyatiAvailableMarketIds);
+
   /// Supabase `markets` tablosundan cache'lenmis aktif market listesi.
   /// Supabase hazir degilse veya fetch basarisizsa bos liste doner.
   List<SupabaseMarket> get supabaseMarkets =>
