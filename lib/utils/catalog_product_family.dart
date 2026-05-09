@@ -14,12 +14,17 @@ List<ActuellerCatalogItem> groupCatalogItemsByProductFamily(
   }
 
   final result = grouped.values.toList(growable: false);
+  final titleCache = <String, String>{};
+  String titleFor(ActuellerCatalogItem item) {
+    return titleCache.putIfAbsent(
+        item.id, () => catalogProductFamilyTitle(item));
+  }
+
   result.sort((a, b) {
     final categoryCompare =
         (a.sourceMenuCategory ?? '').compareTo(b.sourceMenuCategory ?? '');
     if (categoryCompare != 0) return categoryCompare;
-    final titleCompare =
-        catalogProductFamilyTitle(a).compareTo(catalogProductFamilyTitle(b));
+    final titleCompare = titleFor(a).compareTo(titleFor(b));
     if (titleCompare != 0) return titleCompare;
     return a.price.compareTo(b.price);
   });
@@ -131,13 +136,18 @@ bool _isBetterFamilyRepresentative(
 }
 
 _FamilySignature _familySignature(ActuellerCatalogItem item) {
-  final categoryKey = _normalize(
+  final sourceCategoryKey = _normalize(
     item.sourceMenuCategory ?? item.sourceMainCategory ?? item.category.name,
   );
   final measure = _parseMeasure(item);
   var words = _dropLeadingBrandWords(_words(item.productTitle), item);
   final normalizedWords = words.map((word) => word.normalized).toList();
-  final plainWater = _isPlainWaterLike(categoryKey, normalizedWords);
+  final plainWater = _isPlainWaterLike(sourceCategoryKey, normalizedWords);
+  final categoryKey = _familyCategoryKey(
+    item,
+    sourceCategoryKey: sourceCategoryKey,
+    plainWater: plainWater,
+  );
 
   if (plainWater) {
     words = words
@@ -163,12 +173,88 @@ _FamilySignature _familySignature(ActuellerCatalogItem item) {
       ? _normalize(item.productTitle).replaceAll(' ', '-')
       : coreTokens.join('-');
   return _FamilySignature(
-    categoryKey: categoryKey.isEmpty ? 'unknown' : categoryKey,
+    categoryKey: categoryKey,
     coreKey: coreKey,
     measureKey: measure?.key ?? 'no-measure',
     measure: measure,
     isPlainWater: plainWater,
   );
+}
+
+String _familyCategoryKey(
+  ActuellerCatalogItem item, {
+  required String sourceCategoryKey,
+  required bool plainWater,
+}) {
+  if (plainWater) {
+    return 'food';
+  }
+
+  final localCategoryKey = item.category.name;
+  if (localCategoryKey != 'other') {
+    return localCategoryKey;
+  }
+
+  final broadSourceKey = _broadSourceCategoryKey(sourceCategoryKey);
+  if (broadSourceKey != null) {
+    return broadSourceKey;
+  }
+
+  return sourceCategoryKey.isEmpty ? 'unknown' : sourceCategoryKey;
+}
+
+String? _broadSourceCategoryKey(String sourceCategoryKey) {
+  if (sourceCategoryKey.isEmpty) return null;
+
+  const foodSignals = {
+    'atistirmalik',
+    'bebek-mama',
+    'dondurulmus',
+    'et-tavuk',
+    'firin',
+    'gida',
+    'icecek',
+    'kahvaltilik',
+    'meyve-sebze',
+    'meyve-suyu',
+    'peynir',
+    'su',
+    'sut',
+    'sut-urunleri',
+    'temel-gida',
+    'yogurt',
+  };
+  if (foodSignals.any(sourceCategoryKey.contains)) {
+    return 'food';
+  }
+
+  const cleaningSignals = {
+    'agiz-bakim',
+    'bebek-bakim',
+    'deterjan',
+    'ev-bakim',
+    'hijyen',
+    'kagit',
+    'kisisel-bakim',
+    'kozmetik',
+    'sampuan',
+    'temizlik',
+  };
+  if (cleaningSignals.any(sourceCategoryKey.contains)) {
+    return 'cleaning';
+  }
+
+  const homeSignals = {
+    'ev-yasam',
+    'ev-ve-yasam',
+    'mutfak',
+    'sofra',
+  };
+  if (homeSignals.any(sourceCategoryKey.contains)) {
+    return 'home';
+  }
+
+  return null;
 }
 
 bool _isPlainWaterLike(String categoryKey, List<String> words) {

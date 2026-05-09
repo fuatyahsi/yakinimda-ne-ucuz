@@ -1772,13 +1772,18 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
     final activeCategory =
         selectedCategory.isEmpty ? null : selectedCategory.first;
     final categorySummaryCount = displayCategories.length;
+    final totalProductCount = provider.supabaseProductCount ?? allItems.length;
     final summaryLabel = hasActiveProductFilter
-        ? (isTr
-            ? '${filteredItems.length}/${allItems.length} \u00FCr\u00FCn \u2022 $categorySummaryCount kategori'
-            : '${filteredItems.length}/${allItems.length} items \u2022 $categorySummaryCount categories')
+        ? (_searchQuery.trim().isNotEmpty
+            ? (isTr
+                ? '${filteredItems.length} \u00FCr\u00FCn bulundu \u2022 $categorySummaryCount kategori'
+                : '${filteredItems.length} items found \u2022 $categorySummaryCount categories')
+            : (isTr
+                ? '${filteredItems.length} \u00FCr\u00FCn \u2022 $categorySummaryCount kategori'
+                : '${filteredItems.length} items \u2022 $categorySummaryCount categories'))
         : (isTr
-            ? '${allItems.length} \u00FCr\u00FCn haz\u0131r \u2022 $categorySummaryCount kategori'
-            : '${allItems.length} items ready \u2022 $categorySummaryCount categories');
+            ? '$totalProductCount \u00FCr\u00FCn haz\u0131r \u2022 $categorySummaryCount kategori'
+            : '$totalProductCount items ready \u2022 $categorySummaryCount categories');
 
     return CustomScrollView(
       slivers: [
@@ -1788,7 +1793,7 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
             child: _CompactMarketHeroShowcase(
               isTr: isTr,
               usesOfficialSource: usesOfficialSource,
-              totalItems: allItems.length,
+              totalItems: totalProductCount,
               categoryCount: categorySummaryCount,
               selectedMarketCount:
                   provider.smartKitchenPreferences.preferredMarkets.length,
@@ -2317,12 +2322,23 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
   }) {
     final currentMarketId =
         normalizeMarketId(base.marketName) ?? base.marketName.toLowerCase();
-    final bestByItem = <String, ({ActuellerCatalogItem item, int score})>{};
+    final baseVariantKey = _officialCompareVariantKey(
+      base,
+      marketId: currentMarketId,
+    );
+    final bestByVariant = <String, ({ActuellerCatalogItem item, int score})>{};
 
     for (final candidate in candidates) {
       final candidateMarketId = normalizeMarketId(candidate.marketName) ??
           candidate.marketName.toLowerCase();
+      final candidateVariantKey = _officialCompareVariantKey(
+        candidate,
+        marketId: candidateMarketId,
+      );
       if (candidate.id == base.id) {
+        continue;
+      }
+      if (candidateVariantKey == baseVariantKey) {
         continue;
       }
       if (candidateMarketId == currentMarketId &&
@@ -2337,15 +2353,15 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
         continue;
       }
 
-      final previous = bestByItem[candidate.id];
+      final previous = bestByVariant[candidateVariantKey];
       if (previous == null ||
           score > previous.score ||
           (score == previous.score && candidate.price < previous.item.price)) {
-        bestByItem[candidate.id] = (item: candidate, score: score);
+        bestByVariant[candidateVariantKey] = (item: candidate, score: score);
       }
     }
 
-    return bestByItem.values
+    return bestByVariant.values
         .map(
           (match) => _CompareEntry(
             item: match.item,
@@ -2358,6 +2374,17 @@ class _SmartActuellerScreenState extends State<SmartActuellerScreen> {
         )
         .toList()
       ..sort((a, b) => a.price.compareTo(b.price));
+  }
+
+  String _officialCompareVariantKey(
+    ActuellerCatalogItem item, {
+    required String marketId,
+  }) {
+    return [
+      marketId,
+      _normalizeMarketCompareValue(catalogVariantLabel(item)),
+      item.price.toStringAsFixed(2),
+    ].join('::');
   }
 
   int _officialCrossMarketMatchScore({

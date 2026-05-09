@@ -415,6 +415,7 @@ class AppProvider extends ChangeNotifier {
   // secilebildigini gostermek icin bunu kullanir — marketfiyati.org.tr'nin
   // konum listesi yalnizca fallback.
   List<SupabaseMarket> _supabaseMarkets = const [];
+  int? _supabaseProductCount;
   bool _isLoadingSupabaseMarkets = false;
 
   bool get isLoading => _isLoading;
@@ -481,6 +482,8 @@ class AppProvider extends ChangeNotifier {
 
   List<String> get supabaseMarketIds =>
       List.unmodifiable(_supabaseMarkets.map((m) => m.id));
+
+  int? get supabaseProductCount => _supabaseProductCount;
 
   /// UI'da "seçilebilecek market sayısı"nı gösteren tek giris noktasi.
   /// Supabase listesi varsa onun uzunlugunu, yoksa marketfiyati.org.tr
@@ -587,6 +590,12 @@ class AppProvider extends ChangeNotifier {
     } catch (e) {
       debugPrint('refreshSupabaseMarkets failed: $e');
       // Cache'i silmiyoruz — onceki fetch'ten kalan liste UI icin daha iyi.
+    }
+    try {
+      _supabaseProductCount = await SupabaseService.instance.countProducts();
+    } catch (e) {
+      debugPrint('refreshSupabaseMarkets/countProducts failed: $e');
+      // Count cache'i silmiyoruz; UI son bilinen backend sayisini gosterebilir.
     } finally {
       _isLoadingSupabaseMarkets = false;
       notifyListeners();
@@ -1809,13 +1818,18 @@ class AppProvider extends ChangeNotifier {
     final normalizedItems = groupCatalogItemsByProductFamily(
       _normalizeOfficialCatalogItems(catalogItems),
     );
+    final titleCache = <String, String>{};
+    String titleFor(ActuellerCatalogItem item) {
+      return titleCache.putIfAbsent(
+          item.id, () => catalogProductFamilyTitle(item));
+    }
+
     final sortedItems = [...normalizedItems]..sort((a, b) {
         final categoryCompare = (a.sourceMenuCategory ?? '').compareTo(
           b.sourceMenuCategory ?? '',
         );
         if (categoryCompare != 0) return categoryCompare;
-        final titleCompare = catalogProductFamilyTitle(a)
-            .compareTo(catalogProductFamilyTitle(b));
+        final titleCompare = titleFor(a).compareTo(titleFor(b));
         if (titleCompare != 0) return titleCompare;
         return a.price.compareTo(b.price);
       });
@@ -1839,15 +1853,27 @@ class AppProvider extends ChangeNotifier {
         ? 'Se\u00e7ili konum ve marketlerde \u00fcr\u00fcn bulunamad\u0131.'
         : null;
 
-    // Record price history from freshly synced items.
     if (sortedItems.isNotEmpty) {
-      _priceHistories = await _priceHistoryService.recordFromCatalogItems(
-        items: sortedItems,
-        existing: _priceHistories,
-      );
-      // Check price watches against the fresh catalog.
-      await _checkPriceWatches(sortedItems);
+      _recordOfficialCatalogSideEffects(sortedItems);
     }
+  }
+
+  void _recordOfficialCatalogSideEffects(List<ActuellerCatalogItem> items) {
+    final historyItems = items
+        .take(PriceHistoryService.maxTrackedProducts)
+        .toList(growable: false);
+    unawaited(() async {
+      try {
+        _priceHistories = await _priceHistoryService.recordFromCatalogItems(
+          items: historyItems,
+          existing: _priceHistories,
+        );
+        await _checkPriceWatches(items);
+        notifyListeners();
+      } catch (error) {
+        debugPrint('[Catalog Sync] side effects failed: $error');
+      }
+    }());
   }
 
   Future<void> _refreshMarketFiyatiSessionForPreferredMarkets() async {
